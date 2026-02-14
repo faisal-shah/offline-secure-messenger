@@ -152,7 +152,7 @@ void scr_inbox_refresh(void)
         /* Last message preview */
         if (latest) {
             lv_obj_t *preview = lv_label_create(row);
-            char prev_text[64];
+            char prev_text[MAX_TEXT_LEN + 8];
             snprintf(prev_text, sizeof(prev_text), "%s%s",
                      latest->direction == MSG_SENT ? "You: " : "",
                      latest->plaintext);
