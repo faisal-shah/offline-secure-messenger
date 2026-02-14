@@ -15,6 +15,9 @@ static lv_obj_t *header_name;
 static lv_obj_t *msg_list;
 static lv_obj_t *reply_ta;
 static lv_obj_t *send_btn;
+static lv_obj_t *confirm_del_thread; /* confirmation dialog for thread delete */
+static lv_obj_t *confirm_del_msg;    /* confirmation dialog for single message */
+static uint32_t  pending_del_msg_id;
 
 static void back_cb(lv_event_t *e)
 {
@@ -41,6 +44,50 @@ static void send_reply_cb(lv_event_t *e)
     messages_save();
     lv_textarea_set_text(reply_ta, "");
     scr_conversation_refresh();
+}
+
+/* --- Delete thread --- */
+static void delete_thread_ask_cb(lv_event_t *e)
+{
+    (void)e;
+    lv_obj_clear_flag(confirm_del_thread, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void delete_thread_yes_cb(lv_event_t *e)
+{
+    (void)e;
+    lv_obj_add_flag(confirm_del_thread, LV_OBJ_FLAG_HIDDEN);
+    messages_delete_for_contact(g_app.selected_contact_id);
+    messages_save();
+    scr_conversation_refresh();
+}
+
+static void delete_thread_no_cb(lv_event_t *e)
+{
+    (void)e;
+    lv_obj_add_flag(confirm_del_thread, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* --- Delete single message --- */
+static void msg_bubble_tap_cb(lv_event_t *e)
+{
+    pending_del_msg_id = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
+    lv_obj_clear_flag(confirm_del_msg, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void delete_msg_yes_cb(lv_event_t *e)
+{
+    (void)e;
+    lv_obj_add_flag(confirm_del_msg, LV_OBJ_FLAG_HIDDEN);
+    messages_delete_by_id(pending_del_msg_id);
+    messages_save();
+    scr_conversation_refresh();
+}
+
+static void delete_msg_no_cb(lv_event_t *e)
+{
+    (void)e;
+    lv_obj_add_flag(confirm_del_msg, LV_OBJ_FLAG_HIDDEN);
 }
 
 void scr_conversation_create(void)
@@ -73,6 +120,20 @@ void scr_conversation_create(void)
     lv_obj_set_style_text_color(header_name, lv_color_hex(0x00B0FF), 0);
     lv_obj_set_style_text_font(header_name, &lv_font_montserrat_14, 0);
     lv_obj_align(header_name, LV_ALIGN_CENTER, 0, 0);
+
+    /* Delete-thread button in header */
+    lv_obj_t *del_thread_btn = lv_button_create(header);
+    lv_obj_set_size(del_thread_btn, 28, 22);
+    lv_obj_align(del_thread_btn, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_set_style_bg_color(del_thread_btn, lv_color_hex(0xFF1744), 0);
+    lv_obj_set_style_radius(del_thread_btn, 4, 0);
+    lv_obj_set_style_pad_all(del_thread_btn, 0, 0);
+    lv_obj_add_event_cb(del_thread_btn, delete_thread_ask_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *dt_ico = lv_label_create(del_thread_btn);
+    lv_label_set_text(dt_ico, LV_SYMBOL_TRASH);
+    lv_obj_set_style_text_color(dt_ico, lv_color_white(), 0);
+    lv_obj_set_style_text_font(dt_ico, &lv_font_montserrat_10, 0);
+    lv_obj_center(dt_ico);
 
     /* Message list */
     msg_list = lv_obj_create(scr);
@@ -112,6 +173,78 @@ void scr_conversation_create(void)
     lv_label_set_text(slbl, LV_SYMBOL_OK);
     lv_obj_set_style_text_color(slbl, lv_color_white(), 0);
     lv_obj_center(slbl);
+
+    /* --- Delete thread confirmation dialog --- */
+    confirm_del_thread = lv_obj_create(scr);
+    lv_obj_set_size(confirm_del_thread, 260, 90);
+    lv_obj_center(confirm_del_thread);
+    lv_obj_set_style_bg_color(confirm_del_thread, lv_color_hex(0x0F3460), 0);
+    lv_obj_set_style_border_color(confirm_del_thread, lv_color_hex(0xFF1744), 0);
+    lv_obj_set_style_border_width(confirm_del_thread, 2, 0);
+    lv_obj_set_style_radius(confirm_del_thread, 8, 0);
+    lv_obj_set_style_pad_all(confirm_del_thread, 8, 0);
+    lv_obj_add_flag(confirm_del_thread, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *dt_prompt = lv_label_create(confirm_del_thread);
+    lv_label_set_text(dt_prompt, "Delete all messages\nin this conversation?");
+    lv_obj_set_style_text_color(dt_prompt, lv_color_white(), 0);
+    lv_obj_align(dt_prompt, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    lv_obj_t *dt_yes = lv_button_create(confirm_del_thread);
+    lv_obj_set_size(dt_yes, 80, 26);
+    lv_obj_align(dt_yes, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_set_style_bg_color(dt_yes, lv_color_hex(0xFF1744), 0);
+    lv_obj_add_event_cb(dt_yes, delete_thread_yes_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *dt_yes_lbl = lv_label_create(dt_yes);
+    lv_label_set_text(dt_yes_lbl, "Delete");
+    lv_obj_set_style_text_color(dt_yes_lbl, lv_color_white(), 0);
+    lv_obj_center(dt_yes_lbl);
+
+    lv_obj_t *dt_no = lv_button_create(confirm_del_thread);
+    lv_obj_set_size(dt_no, 80, 26);
+    lv_obj_align(dt_no, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_set_style_bg_color(dt_no, lv_color_hex(0x424242), 0);
+    lv_obj_add_event_cb(dt_no, delete_thread_no_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *dt_no_lbl = lv_label_create(dt_no);
+    lv_label_set_text(dt_no_lbl, "Cancel");
+    lv_obj_set_style_text_color(dt_no_lbl, lv_color_white(), 0);
+    lv_obj_center(dt_no_lbl);
+
+    /* --- Delete single message confirmation dialog --- */
+    confirm_del_msg = lv_obj_create(scr);
+    lv_obj_set_size(confirm_del_msg, 240, 80);
+    lv_obj_center(confirm_del_msg);
+    lv_obj_set_style_bg_color(confirm_del_msg, lv_color_hex(0x0F3460), 0);
+    lv_obj_set_style_border_color(confirm_del_msg, lv_color_hex(0xFF9100), 0);
+    lv_obj_set_style_border_width(confirm_del_msg, 2, 0);
+    lv_obj_set_style_radius(confirm_del_msg, 8, 0);
+    lv_obj_set_style_pad_all(confirm_del_msg, 8, 0);
+    lv_obj_add_flag(confirm_del_msg, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *dm_prompt = lv_label_create(confirm_del_msg);
+    lv_label_set_text(dm_prompt, "Delete this message?");
+    lv_obj_set_style_text_color(dm_prompt, lv_color_white(), 0);
+    lv_obj_align(dm_prompt, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    lv_obj_t *dm_yes = lv_button_create(confirm_del_msg);
+    lv_obj_set_size(dm_yes, 80, 26);
+    lv_obj_align(dm_yes, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_set_style_bg_color(dm_yes, lv_color_hex(0xFF1744), 0);
+    lv_obj_add_event_cb(dm_yes, delete_msg_yes_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *dm_yes_lbl = lv_label_create(dm_yes);
+    lv_label_set_text(dm_yes_lbl, "Delete");
+    lv_obj_set_style_text_color(dm_yes_lbl, lv_color_white(), 0);
+    lv_obj_center(dm_yes_lbl);
+
+    lv_obj_t *dm_no = lv_button_create(confirm_del_msg);
+    lv_obj_set_size(dm_no, 80, 26);
+    lv_obj_align(dm_no, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_set_style_bg_color(dm_no, lv_color_hex(0x424242), 0);
+    lv_obj_add_event_cb(dm_no, delete_msg_no_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *dm_no_lbl = lv_label_create(dm_no);
+    lv_label_set_text(dm_no_lbl, "Cancel");
+    lv_obj_set_style_text_color(dm_no_lbl, lv_color_white(), 0);
+    lv_obj_center(dm_no_lbl);
 }
 
 void scr_conversation_refresh(void)
@@ -139,6 +272,9 @@ void scr_conversation_refresh(void)
         lv_obj_set_style_border_width(bubble, 0, 0);
         lv_obj_set_style_pad_all(bubble, 6, 0);
         lv_obj_set_scrollbar_mode(bubble, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_add_flag(bubble, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(bubble, msg_bubble_tap_cb, LV_EVENT_CLICKED,
+                            (void *)(uintptr_t)m->id);
 
         if (is_sent) {
             lv_obj_set_style_bg_color(bubble, lv_color_hex(0x0F3460), 0);

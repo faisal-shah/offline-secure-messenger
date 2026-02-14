@@ -154,3 +154,34 @@ message_t *messages_get_latest_for_contact(uint32_t contact_id)
     }
     return latest;
 }
+
+bool messages_delete_by_id(uint32_t id)
+{
+    for (uint32_t i = 0; i < g_app.message_count; i++) {
+        if (g_app.messages[i].id == id) {
+            for (uint32_t j = i; j < g_app.message_count - 1; j++) {
+                g_app.messages[j] = g_app.messages[j + 1];
+            }
+            g_app.message_count--;
+            memset(&g_app.messages[g_app.message_count], 0, sizeof(message_t));
+            return true;
+        }
+    }
+    return false;
+}
+
+void messages_delete_for_contact(uint32_t contact_id)
+{
+    uint32_t dst = 0;
+    for (uint32_t src = 0; src < g_app.message_count; src++) {
+        if (g_app.messages[src].contact_id != contact_id) {
+            if (dst != src) g_app.messages[dst] = g_app.messages[src];
+            dst++;
+        }
+    }
+    /* Clear vacated slots */
+    for (uint32_t i = dst; i < g_app.message_count; i++) {
+        memset(&g_app.messages[i], 0, sizeof(message_t));
+    }
+    g_app.message_count = dst;
+}

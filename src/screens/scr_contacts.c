@@ -6,6 +6,7 @@
 #include "scr_home.h"
 #include "../app.h"
 #include "../data/contacts.h"
+#include "../data/messages.h"
 #include "../crypto_sim.h"
 #include "../io_monitor.h"
 #include <stdio.h>
@@ -14,6 +15,8 @@
 static lv_obj_t *list_cont;
 static lv_obj_t *name_input_cont;
 static lv_obj_t *name_ta;
+static lv_obj_t *confirm_del_cont;     /* delete-contact confirmation dialog */
+static uint32_t  pending_delete_id;    /* contact id awaiting confirmation */
 
 static void back_cb(lv_event_t *e)
 {
@@ -61,6 +64,39 @@ static void cancel_add_cb(lv_event_t *e)
 {
     (void)e;
     lv_obj_add_flag(name_input_cont, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void delete_contact_ask_cb(lv_event_t *e)
+{
+    uint32_t idx = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
+    if (idx < g_app.contact_count) {
+        pending_delete_id = g_app.contacts[idx].id;
+        /* Update confirmation label with contact name */
+        lv_obj_t *lbl = lv_obj_get_child(confirm_del_cont, 0);
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Delete \"%s\"?\nAll messages will be removed.",
+                 g_app.contacts[idx].name);
+        lv_label_set_text(lbl, msg);
+        lv_obj_clear_flag(confirm_del_cont, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void delete_contact_yes_cb(lv_event_t *e)
+{
+    (void)e;
+    lv_obj_add_flag(confirm_del_cont, LV_OBJ_FLAG_HIDDEN);
+    messages_delete_for_contact(pending_delete_id);
+    contacts_delete(pending_delete_id);
+    contacts_save();
+    messages_save();
+    io_monitor_refresh();
+    scr_contacts_refresh();
+}
+
+static void delete_contact_no_cb(lv_event_t *e)
+{
+    (void)e;
+    lv_obj_add_flag(confirm_del_cont, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void contact_tap_cb(lv_event_t *e)
@@ -169,6 +205,44 @@ void scr_contacts_create(void)
     lv_label_set_text(cancel_lbl, "Cancel");
     lv_obj_set_style_text_color(cancel_lbl, lv_color_white(), 0);
     lv_obj_center(cancel_lbl);
+
+    /* Delete confirmation dialog (hidden by default) */
+    confirm_del_cont = lv_obj_create(scr);
+    lv_obj_set_size(confirm_del_cont, 280, 110);
+    lv_obj_center(confirm_del_cont);
+    lv_obj_set_style_bg_color(confirm_del_cont, lv_color_hex(0x0F3460), 0);
+    lv_obj_set_style_border_color(confirm_del_cont, lv_color_hex(0xFF1744), 0);
+    lv_obj_set_style_border_width(confirm_del_cont, 2, 0);
+    lv_obj_set_style_radius(confirm_del_cont, 8, 0);
+    lv_obj_set_style_pad_all(confirm_del_cont, 8, 0);
+    lv_obj_add_flag(confirm_del_cont, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *del_prompt = lv_label_create(confirm_del_cont);
+    lv_label_set_text(del_prompt, "");
+    lv_obj_set_style_text_color(del_prompt, lv_color_white(), 0);
+    lv_obj_set_width(del_prompt, 260);
+    lv_label_set_long_mode(del_prompt, LV_LABEL_LONG_WRAP);
+    lv_obj_align(del_prompt, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    lv_obj_t *del_yes = lv_button_create(confirm_del_cont);
+    lv_obj_set_size(del_yes, 80, 26);
+    lv_obj_align(del_yes, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_set_style_bg_color(del_yes, lv_color_hex(0xFF1744), 0);
+    lv_obj_add_event_cb(del_yes, delete_contact_yes_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *del_yes_lbl = lv_label_create(del_yes);
+    lv_label_set_text(del_yes_lbl, "Delete");
+    lv_obj_set_style_text_color(del_yes_lbl, lv_color_white(), 0);
+    lv_obj_center(del_yes_lbl);
+
+    lv_obj_t *del_no = lv_button_create(confirm_del_cont);
+    lv_obj_set_size(del_no, 80, 26);
+    lv_obj_align(del_no, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_set_style_bg_color(del_no, lv_color_hex(0x424242), 0);
+    lv_obj_add_event_cb(del_no, delete_contact_no_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *del_no_lbl = lv_label_create(del_no);
+    lv_label_set_text(del_no_lbl, "Cancel");
+    lv_obj_set_style_text_color(del_no_lbl, lv_color_white(), 0);
+    lv_obj_center(del_no_lbl);
 }
 
 void scr_contacts_refresh(void)
@@ -239,6 +313,21 @@ void scr_contacts_refresh(void)
         lv_label_set_text(st, st_label);
         lv_obj_set_style_text_color(st, lv_color_hex(0x888888), 0);
         lv_obj_set_style_text_font(st, &lv_font_montserrat_10, 0);
-        lv_obj_align(st, LV_ALIGN_RIGHT_MID, -4, 0);
+        lv_obj_align(st, LV_ALIGN_RIGHT_MID, -30, 0);
+
+        /* Delete button */
+        lv_obj_t *del_btn = lv_button_create(row);
+        lv_obj_set_size(del_btn, 24, 22);
+        lv_obj_align(del_btn, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_set_style_bg_color(del_btn, lv_color_hex(0xFF1744), 0);
+        lv_obj_set_style_radius(del_btn, 4, 0);
+        lv_obj_set_style_pad_all(del_btn, 0, 0);
+        lv_obj_add_event_cb(del_btn, delete_contact_ask_cb, LV_EVENT_CLICKED,
+                            (void *)(uintptr_t)i);
+        lv_obj_t *del_ico = lv_label_create(del_btn);
+        lv_label_set_text(del_ico, LV_SYMBOL_TRASH);
+        lv_obj_set_style_text_color(del_ico, lv_color_white(), 0);
+        lv_obj_set_style_text_font(del_ico, &lv_font_montserrat_10, 0);
+        lv_obj_center(del_ico);
     }
 }

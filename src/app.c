@@ -789,6 +789,123 @@ static void test_execute_step(void)
         break;
     }
 
+    case 37: { /* Delete a single message */
+        printf("[Step 37] Delete single message from conversation\n");
+        /* Ensure we have messages for Charlie */
+        contact_t *c = contacts_find_by_name("Charlie");
+        if (!c) { test_fail("Charlie not found"); break; }
+        g_app.selected_contact_id = c->id;
+        uint32_t before = messages_count_for_contact(c->id);
+        if (before == 0) {
+            messages_add(c->id, MSG_SENT, "Test msg to delete");
+            messages_save();
+            before = 1;
+        }
+        /* Delete the first message for this contact */
+        uint32_t del_id = 0;
+        for (uint32_t i = 0; i < g_app.message_count; i++) {
+            if (g_app.messages[i].contact_id == c->id) {
+                del_id = g_app.messages[i].id;
+                break;
+            }
+        }
+        bool ok = messages_delete_by_id(del_id);
+        messages_save();
+        uint32_t after = messages_count_for_contact(c->id);
+        if (ok && after == before - 1) test_pass("Single message deleted");
+        else test_fail("Single message delete failed");
+
+        app_navigate_to(SCR_CONVERSATION);
+        scr_conversation_refresh();
+        lv_timer_handler();
+        app_take_screenshot("30_msg_deleted");
+        break;
+    }
+
+    case 38: { /* Delete entire message thread */
+        printf("[Step 38] Delete message thread for a contact\n");
+        contact_t *c = contacts_find_by_name("Charlie");
+        if (!c) { test_fail("Charlie not found"); break; }
+        /* Add a couple messages so there's something to delete */
+        messages_add(c->id, MSG_SENT, "Thread msg 1");
+        messages_add(c->id, MSG_RECEIVED, "Thread msg 2");
+        messages_save();
+        uint32_t before = messages_count_for_contact(c->id);
+        if (before < 2) { test_fail("Not enough messages to test thread delete"); break; }
+
+        messages_delete_for_contact(c->id);
+        messages_save();
+        uint32_t after = messages_count_for_contact(c->id);
+        if (after == 0) test_pass("Thread deleted (all messages removed)");
+        else test_fail("Thread delete left messages behind");
+
+        /* Contact should still exist */
+        contact_t *c2 = contacts_find_by_name("Charlie");
+        if (c2) test_pass("Contact preserved after thread delete");
+        else test_fail("Contact deleted with thread");
+
+        g_app.selected_contact_id = c->id;
+        app_navigate_to(SCR_CONVERSATION);
+        scr_conversation_refresh();
+        lv_timer_handler();
+        app_take_screenshot("31_thread_deleted");
+        break;
+    }
+
+    case 39: { /* Delete contact and verify messages removed */
+        printf("[Step 39] Delete contact with messages\n");
+        contact_t *c = contacts_find_by_name("Diana");
+        if (!c) { test_fail("Diana not found"); break; }
+        uint32_t diana_id = c->id;
+        /* Add messages for Diana */
+        messages_add(diana_id, MSG_SENT, "Diana msg 1");
+        messages_add(diana_id, MSG_RECEIVED, "Diana msg 2");
+        messages_save();
+        contacts_save();
+        uint32_t contacts_before = g_app.contact_count;
+
+        /* Delete contact (should also clean up messages) */
+        messages_delete_for_contact(diana_id);
+        contacts_delete(diana_id);
+        contacts_save();
+        messages_save();
+
+        if (g_app.contact_count == contacts_before - 1) test_pass("Contact deleted");
+        else test_fail("Contact count wrong after delete");
+
+        if (messages_count_for_contact(diana_id) == 0) test_pass("Messages cleaned up");
+        else test_fail("Orphaned messages remain");
+
+        /* Diana should be gone */
+        contact_t *c2 = contacts_find_by_name("Diana");
+        if (!c2) test_pass("Diana no longer findable");
+        else test_fail("Diana still exists");
+
+        app_navigate_to(SCR_CONTACTS);
+        scr_contacts_refresh();
+        lv_timer_handler();
+        app_take_screenshot("32_contact_deleted");
+        break;
+    }
+
+    case 40: { /* Verify UI dialogs exist on contacts and conversation screens */
+        printf("[Step 40] Verify delete UI elements exist\n");
+        /* Contacts screen should have the confirm_del_cont overlay (child 3) */
+        lv_obj_t *cscr = g_app.screens[SCR_CONTACTS];
+        uint32_t cc = lv_obj_get_child_count(cscr);
+        /* Expected: header(0), list_cont(1), name_input_cont(2), confirm_del_cont(3) */
+        if (cc >= 4) test_pass("Contacts screen has delete dialog");
+        else test_fail("Contacts screen missing delete dialog");
+
+        /* Conversation screen should have dialogs */
+        lv_obj_t *cvscr = g_app.screens[SCR_CONVERSATION];
+        uint32_t cvc = lv_obj_get_child_count(cvscr);
+        /* Expected: header(0), msg_list(1), reply_bar(2), confirm_del_thread(3), confirm_del_msg(4) */
+        if (cvc >= 5) test_pass("Conversation screen has delete dialogs");
+        else test_fail("Conversation screen missing delete dialogs");
+        break;
+    }
+
     default:
         printf("\n=== TEST RESULTS: %d passed, %d failed ===\n",
                test_ctx.pass_count, test_ctx.fail_count);

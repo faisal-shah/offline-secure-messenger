@@ -116,6 +116,22 @@ contact_t *contacts_add(const char *name)
     return c;
 }
 
+bool contacts_delete(uint32_t id)
+{
+    for (uint32_t i = 0; i < g_app.contact_count; i++) {
+        if (g_app.contacts[i].id == id) {
+            /* Shift remaining contacts down */
+            for (uint32_t j = i; j < g_app.contact_count - 1; j++) {
+                g_app.contacts[j] = g_app.contacts[j + 1];
+            }
+            g_app.contact_count--;
+            memset(&g_app.contacts[g_app.contact_count], 0, sizeof(contact_t));
+            return true;
+        }
+    }
+    return false;
+}
+
 contact_t *contacts_find_by_id(uint32_t id)
 {
     for (uint32_t i = 0; i < g_app.contact_count; i++) {
