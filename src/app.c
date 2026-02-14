@@ -106,8 +106,13 @@ void app_init(lv_display_t *disp, lv_display_t *io_disp,
 
     /* Create I/O monitor UI on second display */
     if (io_disp) {
+        /* Temporarily clear default group so I/O monitor widgets
+           don't get added to the device's input group */
+        lv_group_t *saved_group = lv_group_get_default();
+        lv_group_set_default(NULL);
         io_monitor_create(io_disp);
         io_monitor_refresh();
+        lv_group_set_default(saved_group);
         lv_display_set_default(disp);
     }
 

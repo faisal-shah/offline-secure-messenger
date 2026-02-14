@@ -41,7 +41,9 @@ int main(int argc, char *argv[])
         lv_sdl_window_set_title(io_disp, "I/O Monitor");
         /* Create input devices for the monitor window */
         lv_sdl_mouse_create();
-        lv_sdl_keyboard_create();
+        lv_indev_t *io_kb = lv_sdl_keyboard_create();
+        lv_group_t *io_group = lv_group_create();
+        lv_indev_set_group(io_kb, io_group);
     }
 
     /* Ensure device display is default for input devices */
@@ -50,6 +52,11 @@ int main(int argc, char *argv[])
     /* Input devices for device window */
     lv_indev_t *mouse = lv_sdl_mouse_create();
     lv_indev_t *kb    = lv_sdl_keyboard_create();
+
+    /* Create input group so keyboard events reach focused widgets */
+    lv_group_t *dev_group = lv_group_create();
+    lv_group_set_default(dev_group);
+    lv_indev_set_group(kb, dev_group);
 
     /* Initialize the application */
     app_init(dev_disp, io_disp, mouse, kb, test_mode);
