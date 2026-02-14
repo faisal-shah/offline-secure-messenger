@@ -73,6 +73,7 @@ typedef struct {
     lv_indev_t   *mouse;
     lv_indev_t   *keyboard;
     lv_group_t   *dev_group;   /* Input group for device keyboard */
+    lv_group_t   *io_group;    /* Input group for I/O monitor keyboard */
     bool          test_mode;
     bool          quit;
 
@@ -100,7 +101,8 @@ extern app_state_t g_app;
 ====================*/
 void app_init(lv_display_t *disp, lv_display_t *io_disp,
               lv_indev_t *mouse, lv_indev_t *kb,
-              lv_group_t *dev_group, bool test_mode);
+              lv_group_t *dev_group, lv_group_t *io_group,
+              bool test_mode);
 void app_deinit(void);
 bool app_should_quit(void);
 void app_navigate_to(screen_id_t scr);

@@ -65,7 +65,8 @@ void app_take_screenshot(const char *name)
 /*---------- App lifecycle ----------*/
 void app_init(lv_display_t *disp, lv_display_t *io_disp,
               lv_indev_t *mouse, lv_indev_t *kb,
-              lv_group_t *dev_group, bool test_mode)
+              lv_group_t *dev_group, lv_group_t *io_group,
+              bool test_mode)
 {
     memset(&g_app, 0, sizeof(g_app));
     g_app.dev_disp = disp;
@@ -73,6 +74,7 @@ void app_init(lv_display_t *disp, lv_display_t *io_disp,
     g_app.mouse = mouse;
     g_app.keyboard = kb;
     g_app.dev_group = dev_group;
+    g_app.io_group = io_group;
     g_app.test_mode = test_mode;
     g_app.quit = false;
     g_app.next_contact_id = 1;
@@ -108,7 +110,7 @@ void app_init(lv_display_t *disp, lv_display_t *io_disp,
 
     /* Create I/O monitor UI on second display */
     if (io_disp) {
-        io_monitor_create(io_disp);
+        io_monitor_create(io_disp, g_app.io_group);
         io_monitor_refresh();
         lv_display_set_default(disp);
     }

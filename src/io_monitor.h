@@ -6,8 +6,9 @@
 #define IO_MON_HOR_RES 500
 #define IO_MON_VER_RES 400
 
-/* Create I/O monitor UI on the given display */
-void io_monitor_create(lv_display_t *disp);
+/* Create I/O monitor UI on the given display.
+ * If group is non-NULL, textareas are added to it for keyboard input. */
+void io_monitor_create(lv_display_t *disp, lv_group_t *group);
 
 /* Refresh simulation controls (call after data changes) */
 void io_monitor_refresh(void);

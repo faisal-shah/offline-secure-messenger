@@ -177,9 +177,12 @@ static void sim_new_contact_cb(lv_event_t *e)
 
 /*---------- Create / Refresh ----------*/
 
-void io_monitor_create(lv_display_t *disp)
+static lv_group_t *io_group;
+
+void io_monitor_create(lv_display_t *disp, lv_group_t *group)
 {
     mon_disp = disp;
+    io_group = group;
 
     lv_display_t *prev = lv_display_get_default();
     lv_display_set_default(disp);
@@ -319,6 +322,7 @@ void io_monitor_create(lv_display_t *disp)
     lv_textarea_set_one_line(msg_text_ta, true);
     lv_textarea_set_placeholder_text(msg_text_ta, "Type simulated message...");
     lv_obj_set_style_text_font(msg_text_ta, &lv_font_montserrat_10, 0);
+    if (io_group) lv_group_add_obj(io_group, msg_text_ta);
 
     lv_obj_t *send_btn = lv_button_create(msg_row);
     lv_obj_set_size(send_btn, 140, 26);
