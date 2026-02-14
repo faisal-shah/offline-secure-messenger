@@ -148,6 +148,7 @@ void scr_contacts_create(void)
     lv_obj_align(name_ta, LV_ALIGN_TOP_LEFT, 0, 20);
     lv_textarea_set_one_line(name_ta, true);
     lv_textarea_set_placeholder_text(name_ta, "Enter name...");
+    if (g_app.dev_group) lv_group_add_obj(g_app.dev_group, name_ta);
 
     lv_obj_t *ok_btn = lv_button_create(name_input_cont);
     lv_obj_set_size(ok_btn, 80, 26);

@@ -136,6 +136,7 @@ void scr_compose_create(void)
     lv_obj_set_pos(msg_ta, 0, 50);
     lv_textarea_set_placeholder_text(msg_ta, "Type your message...");
     lv_obj_add_event_cb(msg_ta, ta_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    if (g_app.dev_group) lv_group_add_obj(g_app.dev_group, msg_ta);
 
     /* Char count */
     char_count_lbl = lv_label_create(body);

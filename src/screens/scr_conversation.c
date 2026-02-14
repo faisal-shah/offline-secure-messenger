@@ -101,6 +101,7 @@ void scr_conversation_create(void)
     lv_obj_align(reply_ta, LV_ALIGN_LEFT_MID, 0, 0);
     lv_textarea_set_one_line(reply_ta, true);
     lv_textarea_set_placeholder_text(reply_ta, "Reply...");
+    if (g_app.dev_group) lv_group_add_obj(g_app.dev_group, reply_ta);
 
     send_btn = lv_button_create(reply_bar);
     lv_obj_set_size(send_btn, 48, 28);

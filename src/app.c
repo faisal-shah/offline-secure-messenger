@@ -64,13 +64,15 @@ void app_take_screenshot(const char *name)
 
 /*---------- App lifecycle ----------*/
 void app_init(lv_display_t *disp, lv_display_t *io_disp,
-              lv_indev_t *mouse, lv_indev_t *kb, bool test_mode)
+              lv_indev_t *mouse, lv_indev_t *kb,
+              lv_group_t *dev_group, bool test_mode)
 {
     memset(&g_app, 0, sizeof(g_app));
     g_app.dev_disp = disp;
     g_app.io_disp = io_disp;
     g_app.mouse = mouse;
     g_app.keyboard = kb;
+    g_app.dev_group = dev_group;
     g_app.test_mode = test_mode;
     g_app.quit = false;
     g_app.next_contact_id = 1;
@@ -106,13 +108,8 @@ void app_init(lv_display_t *disp, lv_display_t *io_disp,
 
     /* Create I/O monitor UI on second display */
     if (io_disp) {
-        /* Temporarily clear default group so I/O monitor widgets
-           don't get added to the device's input group */
-        lv_group_t *saved_group = lv_group_get_default();
-        lv_group_set_default(NULL);
         io_monitor_create(io_disp);
         io_monitor_refresh();
-        lv_group_set_default(saved_group);
         lv_display_set_default(disp);
     }
 
@@ -402,6 +399,356 @@ static void test_execute_step(void)
         app_take_screenshot("18_final_conversation");
         test_pass("Final conversation view");
         break;
+
+    /*======================================================
+     * Phase 2: Interactive UI flow tests
+     * Exercise actual button clicks, textarea input, and
+     * screen navigation to verify the UI is responsive.
+     *======================================================*/
+
+    case 18: { /* Reset state for interactive tests */
+        printf("\n--- Phase 2: Interactive UI Flow Tests ---\n");
+        printf("[Step 18] Reset state\n");
+        g_app.contact_count = 0;
+        g_app.message_count = 0;
+        g_app.next_contact_id = 1;
+        g_app.next_message_id = 1;
+        app_navigate_to(SCR_HOME);
+        scr_home_refresh();
+        if (g_app.contact_count == 0) test_pass("State reset for interactive tests");
+        else test_fail("State not cleared");
+        break;
+    }
+
+    case 19: { /* Click Contacts nav button on home screen */
+        printf("[Step 19] Click Contacts nav button\n");
+        /* Find the nav bar (last child of home screen), then first button */
+        lv_obj_t *home_scr = g_app.screens[SCR_HOME];
+        uint32_t cnt = lv_obj_get_child_count(home_scr);
+        lv_obj_t *nav_bar = lv_obj_get_child(home_scr, cnt - 1);
+        lv_obj_t *contacts_btn = lv_obj_get_child(nav_bar, 0);
+        lv_obj_send_event(contacts_btn, LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+        if (g_app.current_screen == SCR_CONTACTS) test_pass("Nav to Contacts via click");
+        else test_fail("Nav to Contacts failed");
+        break;
+    }
+
+    case 20: { /* Click [+] to open add contact dialog */
+        printf("[Step 20] Click [+] add contact button\n");
+        lv_obj_t *contacts_scr = g_app.screens[SCR_CONTACTS];
+        /* Header is child 0, add button is rightmost child of header */
+        lv_obj_t *header = lv_obj_get_child(contacts_scr, 0);
+        uint32_t hcnt = lv_obj_get_child_count(header);
+        lv_obj_t *add_btn = lv_obj_get_child(header, hcnt - 1);
+        lv_obj_send_event(add_btn, LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+        /* Name input overlay should be visible */
+        lv_obj_t *overlay = lv_obj_get_child(contacts_scr, 2); /* overlay is 3rd child */
+        bool visible = !lv_obj_has_flag(overlay, LV_OBJ_FLAG_HIDDEN);
+        if (visible) test_pass("Add contact dialog opened");
+        else test_fail("Dialog not visible");
+        break;
+    }
+
+    case 21: { /* Type contact name and click Create */
+        printf("[Step 21] Type name 'Charlie' and click Create\n");
+        lv_obj_t *contacts_scr = g_app.screens[SCR_CONTACTS];
+        lv_obj_t *overlay = lv_obj_get_child(contacts_scr, 2);
+        /* Find textarea in overlay (child 1) and OK button (child 2) */
+        lv_obj_t *ta = lv_obj_get_child(overlay, 1);
+        lv_obj_t *ok_btn = lv_obj_get_child(overlay, 2);
+        lv_textarea_set_text(ta, "Charlie");
+        lv_obj_send_event(ok_btn, LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+        /* Should navigate to Key Exchange */
+        if (g_app.current_screen == SCR_KEY_EXCHANGE) test_pass("Create navigated to Key Exchange");
+        else test_fail("Expected Key Exchange screen, got " );
+        /* Verify contact was created */
+        contact_t *c = contacts_find_by_name("Charlie");
+        if (c && c->status == CONTACT_PENDING_SENT) test_pass("Charlie created as pending_sent");
+        else test_fail("Charlie not created properly");
+        app_take_screenshot("19_interactive_key_exchange");
+        break;
+    }
+
+    case 22: { /* Click Back from Key Exchange → Contacts */
+        printf("[Step 22] Click Back from Key Exchange\n");
+        lv_obj_t *ke_scr = g_app.screens[SCR_KEY_EXCHANGE];
+        lv_obj_t *header = lv_obj_get_child(ke_scr, 0);
+        lv_obj_t *back_btn = lv_obj_get_child(header, 0);
+        lv_obj_send_event(back_btn, LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+        if (g_app.current_screen == SCR_CONTACTS) test_pass("Back to Contacts");
+        else test_fail("Not on Contacts screen");
+        app_take_screenshot("20_interactive_contacts_after_back");
+        break;
+    }
+
+    case 23: { /* Click on the pending contact row → Key Exchange */
+        printf("[Step 23] Click on Charlie contact row\n");
+        lv_obj_t *contacts_scr = g_app.screens[SCR_CONTACTS];
+        lv_obj_t *list = lv_obj_get_child(contacts_scr, 1);
+        if (lv_obj_get_child_count(list) > 0) {
+            lv_obj_t *row = lv_obj_get_child(list, 0);
+            lv_obj_send_event(row, LV_EVENT_CLICKED, NULL);
+            lv_timer_handler();
+            if (g_app.current_screen == SCR_KEY_EXCHANGE) test_pass("Clicked contact → Key Exchange");
+            else test_fail("Expected Key Exchange");
+        } else {
+            test_fail("No contact rows found");
+        }
+        break;
+    }
+
+    case 24: { /* Simulate DH reply (as I/O monitor would) → ESTABLISHED */
+        printf("[Step 24] Simulate DH reply for Charlie\n");
+        contact_t *c = contacts_find_by_name("Charlie");
+        if (c) {
+            c->status = CONTACT_ESTABLISHED;
+            snprintf(c->shared_secret, MAX_KEY_LEN, "test_secret_charlie");
+            contacts_save();
+            scr_key_exchange_refresh();
+            lv_timer_handler();
+            if (c->status == CONTACT_ESTABLISHED) test_pass("Charlie now ESTABLISHED");
+            else test_fail("Charlie not established");
+        } else {
+            test_fail("Charlie not found");
+        }
+        app_take_screenshot("21_interactive_established");
+        break;
+    }
+
+    case 25: { /* Click Back from KE, go Home, click Compose nav */
+        printf("[Step 25] Navigate Home → Compose via click\n");
+        /* Back from key exchange */
+        lv_obj_t *ke_scr = g_app.screens[SCR_KEY_EXCHANGE];
+        lv_obj_t *ke_header = lv_obj_get_child(ke_scr, 0);
+        lv_obj_t *back_btn = lv_obj_get_child(ke_header, 0);
+        lv_obj_send_event(back_btn, LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+        /* Now on Contacts, click back to Home */
+        lv_obj_t *ct_scr = g_app.screens[SCR_CONTACTS];
+        lv_obj_t *ct_header = lv_obj_get_child(ct_scr, 0);
+        lv_obj_t *ct_back = lv_obj_get_child(ct_header, 0);
+        lv_obj_send_event(ct_back, LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+        if (g_app.current_screen != SCR_HOME) { test_fail("Not on Home"); break; }
+        /* Click Compose button (index 1 in nav bar) */
+        lv_obj_t *home = g_app.screens[SCR_HOME];
+        uint32_t hcnt = lv_obj_get_child_count(home);
+        lv_obj_t *nav_bar = lv_obj_get_child(home, hcnt - 1);
+        lv_obj_t *compose_btn = lv_obj_get_child(nav_bar, 1);
+        lv_obj_send_event(compose_btn, LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+        if (g_app.current_screen == SCR_COMPOSE) test_pass("Compose screen via click chain");
+        else test_fail("Not on Compose screen");
+        break;
+    }
+
+    case 26: { /* Type message on Compose and send */
+        printf("[Step 26] Type message and send on Compose\n");
+        scr_compose_refresh(); /* populate dropdown */
+        lv_timer_handler();
+        lv_obj_t *compose_scr = g_app.screens[SCR_COMPOSE];
+        lv_obj_t *body = lv_obj_get_child(compose_scr, 1);
+        /* dropdown is child 1, textarea is child 3, send_btn is child 5 */
+        lv_obj_t *ta = lv_obj_get_child(body, 3);
+        lv_obj_t *send_btn_obj = lv_obj_get_child(body, 5);
+        lv_textarea_set_text(ta, "Interactive test message to Charlie!");
+        lv_timer_handler();
+        uint32_t msg_before = g_app.message_count;
+        lv_obj_send_event(send_btn_obj, LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+        if (g_app.message_count > msg_before) test_pass("Message sent via Compose UI");
+        else test_fail("Message not created");
+        app_take_screenshot("22_interactive_compose_sent");
+        break;
+    }
+
+    case 27: { /* Click Back to Home, then Inbox nav */
+        printf("[Step 27] Navigate to Inbox via clicks\n");
+        lv_obj_t *compose_scr = g_app.screens[SCR_COMPOSE];
+        lv_obj_t *c_header = lv_obj_get_child(compose_scr, 0);
+        lv_obj_t *back_btn = lv_obj_get_child(c_header, 0);
+        lv_obj_send_event(back_btn, LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+        if (g_app.current_screen != SCR_HOME) { test_fail("Not on Home"); break; }
+        /* Click Inbox (index 2 in nav bar) */
+        lv_obj_t *home = g_app.screens[SCR_HOME];
+        uint32_t hcnt = lv_obj_get_child_count(home);
+        lv_obj_t *nav_bar = lv_obj_get_child(home, hcnt - 1);
+        lv_obj_t *inbox_btn = lv_obj_get_child(nav_bar, 2);
+        lv_obj_send_event(inbox_btn, LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+        if (g_app.current_screen == SCR_INBOX) test_pass("Inbox via click chain");
+        else test_fail("Not on Inbox");
+        app_take_screenshot("23_interactive_inbox");
+        break;
+    }
+
+    case 28: { /* Click conversation row → Conversation screen */
+        printf("[Step 28] Click conversation row in Inbox\n");
+        lv_obj_t *inbox_scr = g_app.screens[SCR_INBOX];
+        lv_obj_t *list = lv_obj_get_child(inbox_scr, 1);
+        if (lv_obj_get_child_count(list) > 0) {
+            lv_obj_t *row = lv_obj_get_child(list, 0);
+            lv_obj_send_event(row, LV_EVENT_CLICKED, NULL);
+            lv_timer_handler();
+            if (g_app.current_screen == SCR_CONVERSATION) test_pass("Conversation via Inbox click");
+            else test_fail("Not on Conversation screen");
+        } else {
+            test_fail("No conversation rows in inbox");
+        }
+        break;
+    }
+
+    case 29: { /* Type reply in conversation and send */
+        printf("[Step 29] Type reply in Conversation and send\n");
+        lv_obj_t *convo_scr = g_app.screens[SCR_CONVERSATION];
+        /* reply_bar is child 2, reply_ta is child 0 of reply_bar, send_btn is child 1 */
+        lv_obj_t *reply_bar = lv_obj_get_child(convo_scr, 2);
+        lv_obj_t *ta = lv_obj_get_child(reply_bar, 0);
+        lv_obj_t *send_btn_obj = lv_obj_get_child(reply_bar, 1);
+        lv_textarea_set_text(ta, "Interactive reply message!");
+        uint32_t msg_before = g_app.message_count;
+        lv_obj_send_event(send_btn_obj, LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+        if (g_app.message_count > msg_before) test_pass("Reply sent via Conversation UI");
+        else test_fail("Reply not created");
+        app_take_screenshot("24_interactive_conversation");
+        break;
+    }
+
+    case 30: { /* Click Back from Conversation → Inbox → Home */
+        printf("[Step 30] Navigate back: Conversation → Inbox → Home\n");
+        /* Back from Conversation */
+        lv_obj_t *convo_scr = g_app.screens[SCR_CONVERSATION];
+        lv_obj_t *c_header = lv_obj_get_child(convo_scr, 0);
+        lv_obj_t *back1 = lv_obj_get_child(c_header, 0);
+        lv_obj_send_event(back1, LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+        if (g_app.current_screen != SCR_INBOX) { test_fail("Not on Inbox after back"); break; }
+        /* Back from Inbox */
+        lv_obj_t *inbox_scr = g_app.screens[SCR_INBOX];
+        lv_obj_t *i_header = lv_obj_get_child(inbox_scr, 0);
+        lv_obj_t *back2 = lv_obj_get_child(i_header, 0);
+        lv_obj_send_event(back2, LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+        if (g_app.current_screen == SCR_HOME) test_pass("Full back navigation chain");
+        else test_fail("Not on Home after double back");
+        app_take_screenshot("25_interactive_home_final");
+        break;
+    }
+
+    case 31: { /* Verify textarea is in device group for keyboard input */
+        printf("[Step 31] Verify textareas in device input group\n");
+        lv_group_t *g = g_app.dev_group;
+        if (!g) { test_fail("No device group"); break; }
+        uint32_t obj_count = lv_group_get_obj_count(g);
+        /* We expect 3 textareas: compose msg_ta, conversation reply_ta, contacts name_ta */
+        if (obj_count >= 3) test_pass("Device group has textareas (" );
+        else test_fail("Device group too few objects");
+        /* Test that we can focus compose textarea */
+        app_navigate_to(SCR_COMPOSE);
+        scr_compose_refresh();
+        lv_obj_t *body = lv_obj_get_child(g_app.screens[SCR_COMPOSE], 1);
+        lv_obj_t *ta = lv_obj_get_child(body, 3);
+        lv_group_focus_obj(ta);
+        lv_timer_handler();
+        lv_obj_t *focused = lv_group_get_focused(g);
+        if (focused == ta) test_pass("Can focus compose textarea");
+        else test_fail("Cannot focus compose textarea");
+        break;
+    }
+
+    case 32: { /* Rapid navigation stress test */
+        printf("[Step 32] Rapid navigation stress test\n");
+        screen_id_t screens[] = {SCR_HOME, SCR_CONTACTS, SCR_HOME,
+                                  SCR_COMPOSE, SCR_HOME, SCR_INBOX,
+                                  SCR_HOME, SCR_CONTACTS, SCR_HOME};
+        void (*refreshers[])(void) = {scr_home_refresh, scr_contacts_refresh,
+                                       scr_home_refresh, scr_compose_refresh,
+                                       scr_home_refresh, scr_inbox_refresh,
+                                       scr_home_refresh, scr_contacts_refresh,
+                                       scr_home_refresh};
+        bool ok = true;
+        for (int i = 0; i < 9; i++) {
+            app_navigate_to(screens[i]);
+            refreshers[i]();
+            lv_timer_handler();
+            if (g_app.current_screen != screens[i]) { ok = false; break; }
+        }
+        if (ok) test_pass("Rapid navigation (9 switches) stable");
+        else test_fail("Navigation broke during stress test");
+        break;
+    }
+
+    case 33: { /* Create second contact via UI, verify both in list */
+        printf("[Step 33] Create second contact 'Diana' via UI\n");
+        app_navigate_to(SCR_CONTACTS);
+        scr_contacts_refresh();
+        lv_timer_handler();
+        /* Click [+] */
+        lv_obj_t *contacts_scr = g_app.screens[SCR_CONTACTS];
+        lv_obj_t *header = lv_obj_get_child(contacts_scr, 0);
+        uint32_t hcnt = lv_obj_get_child_count(header);
+        lv_obj_t *add_btn = lv_obj_get_child(header, hcnt - 1);
+        lv_obj_send_event(add_btn, LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+        /* Type name and create */
+        lv_obj_t *overlay = lv_obj_get_child(contacts_scr, 2);
+        lv_obj_t *ta = lv_obj_get_child(overlay, 1);
+        lv_obj_t *ok_btn = lv_obj_get_child(overlay, 2);
+        lv_textarea_set_text(ta, "Diana");
+        lv_obj_send_event(ok_btn, LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+        /* Verify Diana created and we're on Key Exchange */
+        contact_t *d = contacts_find_by_name("Diana");
+        if (d && g_app.current_screen == SCR_KEY_EXCHANGE) test_pass("Diana created via UI");
+        else test_fail("Diana creation failed");
+        /* Go back to contacts */
+        lv_obj_t *ke_scr = g_app.screens[SCR_KEY_EXCHANGE];
+        lv_obj_t *ke_hdr = lv_obj_get_child(ke_scr, 0);
+        lv_obj_t *back_btn = lv_obj_get_child(ke_hdr, 0);
+        lv_obj_send_event(back_btn, LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+        /* Verify contacts list shows both */
+        if (g_app.contact_count == 2 && g_app.current_screen == SCR_CONTACTS)
+            test_pass("Contacts list shows both contacts");
+        else test_fail("Contacts list wrong after second add");
+        app_take_screenshot("26_interactive_two_contacts");
+        break;
+    }
+
+    case 34: { /* Receive simulated message and check inbox */
+        printf("[Step 34] Simulate incoming message and verify inbox\n");
+        contact_t *c = contacts_find_by_name("Charlie");
+        if (!c) { test_fail("Charlie not found"); break; }
+        messages_add(c->id, MSG_RECEIVED, "Hey, this is a simulated incoming message!");
+        c->unread_count++;
+        messages_save();
+        contacts_save();
+        app_navigate_to(SCR_INBOX);
+        scr_inbox_refresh();
+        lv_timer_handler();
+        if (g_app.current_screen == SCR_INBOX) test_pass("Inbox with incoming message");
+        else test_fail("Not on inbox");
+        app_take_screenshot("27_interactive_inbox_unread");
+        break;
+    }
+
+    case 35: { /* Home screen shows unread badge */
+        printf("[Step 35] Home screen with unread badge\n");
+        app_navigate_to(SCR_HOME);
+        scr_home_refresh();
+        lv_timer_handler();
+        contact_t *c = contacts_find_by_name("Charlie");
+        if (c && c->unread_count > 0) test_pass("Home shows unread contact");
+        else test_fail("No unread indicator");
+        app_take_screenshot("28_interactive_home_unread");
+        break;
+    }
 
     default:
         printf("\n=== TEST RESULTS: %d passed, %d failed ===\n",

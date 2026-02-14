@@ -29,37 +29,39 @@ int main(int argc, char *argv[])
     lv_init();
     lv_tick_set_cb(tick_get_cb);
 
-    /* Device display — 320×240 */
+    /* Device display — 320×240 (becomes default as first display) */
     lv_display_t *dev_disp = lv_sdl_window_create(DEVICE_HOR_RES, DEVICE_VER_RES);
     lv_sdl_window_set_zoom(dev_disp, SDL_ZOOM);
     lv_sdl_window_set_title(dev_disp, "Secure Communicator");
+
+    /* Device input devices (dev_disp is already the default) */
+    lv_indev_t *mouse = lv_sdl_mouse_create();
+    lv_indev_t *kb    = lv_sdl_keyboard_create();
+
+    /* Device input group — do NOT set as default to avoid
+       auto-adding every widget from every screen/display */
+    lv_group_t *dev_group = lv_group_create();
+    lv_indev_set_group(kb, dev_group);
 
     /* I/O Monitor display — separate window (skip in test mode) */
     lv_display_t *io_disp = NULL;
     if (!test_mode) {
         io_disp = lv_sdl_window_create(IO_MON_HOR_RES, IO_MON_VER_RES);
         lv_sdl_window_set_title(io_disp, "I/O Monitor");
-        /* Create input devices for the monitor window */
+
+        /* Must set io_disp as default so indevs bind to it */
+        lv_display_set_default(io_disp);
         lv_sdl_mouse_create();
         lv_indev_t *io_kb = lv_sdl_keyboard_create();
         lv_group_t *io_group = lv_group_create();
         lv_indev_set_group(io_kb, io_group);
+
+        /* Restore device as default display */
+        lv_display_set_default(dev_disp);
     }
 
-    /* Ensure device display is default for input devices */
-    lv_display_set_default(dev_disp);
-
-    /* Input devices for device window */
-    lv_indev_t *mouse = lv_sdl_mouse_create();
-    lv_indev_t *kb    = lv_sdl_keyboard_create();
-
-    /* Create input group so keyboard events reach focused widgets */
-    lv_group_t *dev_group = lv_group_create();
-    lv_group_set_default(dev_group);
-    lv_indev_set_group(kb, dev_group);
-
     /* Initialize the application */
-    app_init(dev_disp, io_disp, mouse, kb, test_mode);
+    app_init(dev_disp, io_disp, mouse, kb, dev_group, test_mode);
 
     /* Main loop */
     while (!app_should_quit()) {
