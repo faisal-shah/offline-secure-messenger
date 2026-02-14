@@ -107,6 +107,7 @@ void app_init(lv_display_t *disp, lv_display_t *io_disp,
 
     /* Start on home */
     app_navigate_to(SCR_HOME);
+    scr_home_refresh();
 
     /* Create I/O monitor UI on second display */
     if (io_disp) {
@@ -749,6 +750,42 @@ static void test_execute_step(void)
         if (c && c->unread_count > 0) test_pass("Home shows unread contact");
         else test_fail("No unread indicator");
         app_take_screenshot("28_interactive_home_unread");
+        break;
+    }
+
+    case 36: { /* Regression: home screen shows contacts after simulated restart */
+        printf("[Step 36] Persistence: home shows contacts after reload\n");
+
+        /* Save current state to disk */
+        contacts_save();
+        messages_save();
+        uint32_t count_before = g_app.contact_count;
+
+        /* Simulate restart: clear in-memory data and reload from disk */
+        g_app.contact_count = 0;
+        memset(g_app.contacts, 0, sizeof(g_app.contacts));
+        contacts_load();
+
+        if (g_app.contact_count != count_before) {
+            test_fail("Contact count mismatch after reload");
+        } else {
+            test_pass("Contacts reloaded from disk");
+        }
+
+        /* Navigate to home and refresh (as app_init does on startup) */
+        app_navigate_to(SCR_HOME);
+        scr_home_refresh();
+        lv_timer_handler();
+
+        /* Verify the contact list is populated (not showing empty label) */
+        lv_obj_t *scr = g_app.screens[SCR_HOME];
+        /* contact_list is child 1 of screen (after header) */
+        lv_obj_t *clist = lv_obj_get_child(scr, 1);
+        uint32_t children = lv_obj_get_child_count(clist);
+        /* Should have more than just the empty_label (which is hidden) */
+        if (children > 1) test_pass("Home screen populated after reload");
+        else test_fail("Home screen empty after reload");
+        app_take_screenshot("29_persistence_home_reload");
         break;
     }
 
