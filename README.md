@@ -100,7 +100,7 @@ LVGL 9.4.0 is included as a git submodule — no separate installation needed.
 ```bash
 # Clone (with submodule)
 git clone --recurse-submodules <repo-url>
-cd secure-communicator
+cd offline-secure-messenger
 
 # If you already cloned without submodules:
 git submodule update --init --recursive
@@ -112,6 +112,22 @@ make -j$(nproc)
 ```
 
 The binary is produced at `build/secure_communicator`.
+
+### Incremental rebuild
+
+After code changes, just re-run make:
+
+```bash
+cd build && make -j$(nproc)
+```
+
+### Clean rebuild
+
+CMake doesn't support a full `make clean`. Delete the build directory instead:
+
+```bash
+rm -rf build && mkdir build && cd build && cmake .. && make -j$(nproc)
+```
 
 ## Running
 
