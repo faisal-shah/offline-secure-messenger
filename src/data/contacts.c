@@ -1,0 +1,142 @@
+#include "contacts.h"
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+
+#define CONTACTS_FILE "data_contacts.json"
+
+void contacts_load(void)
+{
+    FILE *f = fopen(CONTACTS_FILE, "r");
+    if (!f) return;
+
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (len <= 0) { fclose(f); return; }
+
+    char *buf = malloc(len + 1);
+    fread(buf, 1, len, f);
+    buf[len] = '\0';
+    fclose(f);
+
+    /* Simple JSON-ish parser — one contact per line block */
+    g_app.contact_count = 0;
+    g_app.next_contact_id = 1;
+
+    const char *p = buf;
+    while (g_app.contact_count < MAX_CONTACTS) {
+        const char *id_str = strstr(p, "\"id\":");
+        if (!id_str) break;
+
+        contact_t *c = &g_app.contacts[g_app.contact_count];
+        memset(c, 0, sizeof(*c));
+
+        sscanf(id_str, "\"id\":%u", &c->id);
+
+        const char *name_str = strstr(id_str, "\"name\":\"");
+        if (name_str) {
+            name_str += 8;
+            const char *end = strchr(name_str, '"');
+            if (end) {
+                size_t nlen = end - name_str;
+                if (nlen >= MAX_NAME_LEN) nlen = MAX_NAME_LEN - 1;
+                memcpy(c->name, name_str, nlen);
+            }
+        }
+
+        const char *status_str = strstr(id_str, "\"status\":");
+        if (status_str) sscanf(status_str, "\"status\":%d", (int *)&c->status);
+
+        const char *unread_str = strstr(id_str, "\"unread\":");
+        if (unread_str) sscanf(unread_str, "\"unread\":%u", &c->unread_count);
+
+        const char *pk_str = strstr(id_str, "\"pubkey\":\"");
+        if (pk_str) {
+            pk_str += 10;
+            const char *end = strchr(pk_str, '"');
+            if (end) {
+                size_t klen = end - pk_str;
+                if (klen >= MAX_KEY_LEN) klen = MAX_KEY_LEN - 1;
+                memcpy(c->public_key, pk_str, klen);
+            }
+        }
+
+        const char *ss_str = strstr(id_str, "\"secret\":\"");
+        if (ss_str) {
+            ss_str += 10;
+            const char *end = strchr(ss_str, '"');
+            if (end) {
+                size_t slen = end - ss_str;
+                if (slen >= MAX_KEY_LEN) slen = MAX_KEY_LEN - 1;
+                memcpy(c->shared_secret, ss_str, slen);
+            }
+        }
+
+        if (c->id >= g_app.next_contact_id)
+            g_app.next_contact_id = c->id + 1;
+
+        g_app.contact_count++;
+
+        p = id_str + 5;
+    }
+
+    free(buf);
+}
+
+void contacts_save(void)
+{
+    FILE *f = fopen(CONTACTS_FILE, "w");
+    if (!f) return;
+
+    fprintf(f, "[\n");
+    for (uint32_t i = 0; i < g_app.contact_count; i++) {
+        contact_t *c = &g_app.contacts[i];
+        fprintf(f, "  {\"id\":%u, \"name\":\"%s\", \"status\":%d, \"unread\":%u, "
+                   "\"pubkey\":\"%s\", \"secret\":\"%s\"}%s\n",
+                c->id, c->name, c->status, c->unread_count,
+                c->public_key, c->shared_secret,
+                (i < g_app.contact_count - 1) ? "," : "");
+    }
+    fprintf(f, "]\n");
+    fclose(f);
+}
+
+contact_t *contacts_add(const char *name)
+{
+    if (g_app.contact_count >= MAX_CONTACTS) return NULL;
+
+    contact_t *c = &g_app.contacts[g_app.contact_count];
+    memset(c, 0, sizeof(*c));
+    c->id = g_app.next_contact_id++;
+    strncpy(c->name, name, MAX_NAME_LEN - 1);
+    c->status = CONTACT_PENDING_SENT;
+    c->created_at = time(NULL);
+    g_app.contact_count++;
+    return c;
+}
+
+contact_t *contacts_find_by_id(uint32_t id)
+{
+    for (uint32_t i = 0; i < g_app.contact_count; i++) {
+        if (g_app.contacts[i].id == id) return &g_app.contacts[i];
+    }
+    return NULL;
+}
+
+contact_t *contacts_find_by_name(const char *name)
+{
+    for (uint32_t i = 0; i < g_app.contact_count; i++) {
+        if (strcmp(g_app.contacts[i].name, name) == 0) return &g_app.contacts[i];
+    }
+    return NULL;
+}
+
+uint32_t contacts_count_by_status(contact_status_t status)
+{
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < g_app.contact_count; i++) {
+        if (g_app.contacts[i].status == status) count++;
+    }
+    return count;
+}

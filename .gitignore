@@ -1,0 +1,4 @@
+build/
+*.bmp
+data_contacts.json
+data_messages.json
