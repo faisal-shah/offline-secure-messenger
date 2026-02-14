@@ -213,4 +213,6 @@ secure-communicator/
 
 ## License
 
-TBD
+This work is licensed under the
+[Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License](https://creativecommons.org/licenses/by-nc-sa/4.0/).
+See [LICENSE](LICENSE) for the full text.
