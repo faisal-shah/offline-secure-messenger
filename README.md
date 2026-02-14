@@ -51,11 +51,11 @@ graph TD
 | Screen | Purpose |
 |---|---|
 | **Home** | Dashboard with contact list, status icons, unread badges, and navigation |
-| **Contacts** | Add/view contacts, tap a contact to start key exchange |
+| **Contacts** | Add/view/delete contacts, tap a contact to start key exchange |
 | **Key Exchange** | 3-step Diffie-Hellman wizard (send params → receive reply → establish) |
 | **Compose** | Pick an established contact, type a message, send (outputs ciphertext) |
 | **Inbox** | Conversation list sorted by most-recent message |
-| **Conversation** | Chat bubbles with inline reply |
+| **Conversation** | Chat bubbles with inline reply, delete individual messages or entire thread |
 
 ### I/O Monitor (second window)
 
@@ -76,6 +76,15 @@ stateDiagram-v2
     PendingReceived --> Established: Complete Exchange
     Established --> Established: Send/Receive Messages
 ```
+
+### Contact & Message Management
+
+- **Delete contact**: Red trash button on each contact row. Shows a confirmation
+  dialog warning that all messages with that contact will also be removed.
+- **Delete message thread**: Trash button in the conversation header clears all
+  messages for the current contact but preserves the contact itself.
+- **Delete individual message**: Tap any message bubble in the conversation view
+  to get a confirmation prompt for deleting just that message.
 
 ## Prerequisites
 
@@ -153,7 +162,7 @@ cd build
 ./secure_communicator --test
 ```
 
-Runs 40 automated tests covering all screens, navigation flows, button
+Runs 50 automated tests covering all screens, navigation flows, button
 interactions, textarea input, and group management. Screenshots are saved to
 `screenshots/` as BMP files. The process exits with code 0 on success.
 
