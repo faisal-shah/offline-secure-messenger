@@ -8,7 +8,8 @@ desktop interaction.
 
 | Screen | Purpose |
 |---|---|
-| **Home** | Dashboard with contact list, status icons, unread badges, navigation |
+| **Setup** | First-launch keypair generation wizard (gates all other screens) |
+| **Home** | Dashboard with contact list, status icons, unread badges, CA indicator |
 | **Contacts** | Add/view/delete contacts, tap to start key exchange |
 | **Key Exchange** | 3-step Diffie-Hellman wizard (send → receive → establish) |
 | **Compose** | Pick an established contact, type a message, encrypt and send |
@@ -32,6 +33,23 @@ stateDiagram-v2
 - **Delete thread**: Trash button in conversation header clears all messages,
   preserves contact.
 - **Delete message**: Tap any bubble for a single-message delete prompt.
+
+## Encryption
+
+Uses **TweetNaCl** (X25519 + XSalsa20-Poly1305):
+- Keypair generated on first launch and persisted to `data_identity.json`
+- Messages encrypted with `crypto_box()`, nonce prepended, base64-encoded
+- Decryption with `crypto_box_open()` — authentication failure rejects message
+
+## Transport Layer
+
+The OSM communicates with the **Companion App (CA)** over a TCP transport
+(simulating BLE GATT in desktop mode).
+
+- OSM listens on TCP port (default: 19200, configurable via `--port`)
+- Fragmentation protocol: `[flags][seq][payload]` with START/END markers
+- Outbound message queue: ciphertext queued when no CA connected, flushed on connect
+- Home screen shows CA connection status indicator
 
 ## Building
 
@@ -60,7 +78,8 @@ rm -rf osm/build && mkdir osm/build && cd osm/build && cmake .. && make -j$(npro
 
 ```bash
 cd osm/build
-./secure_communicator
+./secure_communicator              # default port 19200
+./secure_communicator --port 19201 # custom port (for multiple instances)
 ```
 
 One SDL window opens at 640×480 (320×240 at 2× zoom). Use mouse and keyboard.
@@ -74,8 +93,8 @@ cd osm/build
 ./secure_communicator --test
 ```
 
-Runs 50 automated tests covering all screens, navigation, input, CRUD, and
-deletion flows. Screenshots saved to `osm/screenshots/`. Exits 0 on success.
+Runs 69 automated tests covering screens, navigation, input, CRUD, deletion,
+encryption, and transport. Screenshots saved to `osm/screenshots/`. Exits 0 on success.
 
 ### Smoke test
 
@@ -95,11 +114,17 @@ osm/
 │   ├── main.c              # Entry point, SDL window + input setup
 │   ├── app.h               # Types, constants, app state
 │   ├── app.c               # App lifecycle, navigation, test driver
-│   ├── crypto_sim.h/c      # Fake encrypt/decrypt (placeholder)
+│   ├── crypto.h/c          # TweetNaCl encryption wrapper
+│   ├── tweetnacl.h/c       # TweetNaCl library (vendored)
+│   ├── transport/
+│   │   ├── transport.h     # Abstract transport interface
+│   │   └── transport_tcp.c # TCP server (desktop simulator)
 │   ├── data/
 │   │   ├── contacts.h/c    # Contact CRUD + JSON persistence
-│   │   └── messages.h/c    # Message CRUD + JSON persistence
+│   │   ├── messages.h/c    # Message CRUD + JSON persistence
+│   │   └── identity.h/c    # Keypair persistence
 │   └── screens/
+│       ├── scr_setup.h/c
 │       ├── scr_home.h/c
 │       ├── scr_contacts.h/c
 │       ├── scr_key_exchange.h/c

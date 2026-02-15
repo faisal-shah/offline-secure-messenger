@@ -7,6 +7,7 @@
 #include "app.h"
 #include <unistd.h>
 #include <time.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define SDL_ZOOM        2
@@ -21,8 +22,12 @@ static uint32_t tick_get_cb(void)
 int main(int argc, char *argv[])
 {
     bool test_mode = false;
+    uint16_t port = TRANSPORT_DEFAULT_PORT;
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--test") == 0) test_mode = true;
+        if (strcmp(argv[i], "--test") == 0)
+            test_mode = true;
+        else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc)
+            port = (uint16_t)atoi(argv[++i]);
     }
 
     lv_init();
@@ -43,11 +48,12 @@ int main(int argc, char *argv[])
     lv_indev_set_group(kb, dev_group);
 
     /* Initialize the application */
-    app_init(dev_disp, mouse, kb, dev_group, test_mode);
+    app_init(dev_disp, mouse, kb, dev_group, test_mode, port);
 
     /* Main loop */
     while (!app_should_quit()) {
         uint32_t sleep_ms = lv_timer_handler();
+        app_transport_poll();
         if (test_mode) {
             app_test_tick();
         }

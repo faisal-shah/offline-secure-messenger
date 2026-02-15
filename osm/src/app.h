@@ -3,6 +3,7 @@
 
 #include "lvgl.h"
 #include "crypto.h"
+#include "transport/transport.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
@@ -18,6 +19,7 @@
 #define MAX_TEXT_LEN    1024
 #define MAX_CIPHER_LEN  2048
 #define MAX_KEY_LEN     256
+#define MAX_OUTBOX      32
 
 /*====================
    DATA TYPES
@@ -66,6 +68,14 @@ typedef enum {
 } screen_id_t;
 
 /*====================
+   OUTBOX (queued messages to send via transport)
+====================*/
+typedef struct {
+    char     data[MAX_CIPHER_LEN];
+    uint16_t char_uuid;
+} outbox_entry_t;
+
+/*====================
    APP STATE
 ====================*/
 typedef struct {
@@ -86,6 +96,14 @@ typedef struct {
     /* Identity (our keypair) */
     crypto_identity_t identity;
 
+    /* Transport */
+    transport_t   transport;
+    uint16_t      transport_port;
+
+    /* Outbound message queue */
+    outbox_entry_t outbox[MAX_OUTBOX];
+    uint32_t      outbox_count;
+
     /* Data */
     contact_t     contacts[MAX_CONTACTS];
     uint32_t      contact_count;
@@ -103,7 +121,8 @@ extern app_state_t g_app;
 ====================*/
 void app_init(lv_display_t *disp,
               lv_indev_t *mouse, lv_indev_t *kb,
-              lv_group_t *dev_group, bool test_mode);
+              lv_group_t *dev_group, bool test_mode,
+              uint16_t port);
 
 /* Log output to stderr (replaces I/O monitor) */
 void app_log(const char *context, const char *data);
@@ -111,6 +130,11 @@ void app_deinit(void);
 bool app_should_quit(void);
 void app_navigate_to(screen_id_t scr);
 void app_test_tick(void);
+
+/* Transport: enqueue data to send to CA, flush queued messages */
+void app_outbox_enqueue(uint16_t char_uuid, const char *data);
+void app_outbox_flush(void);
+void app_transport_poll(void);
 
 /* Screenshot helper */
 void app_take_screenshot(const char *name);

@@ -11,7 +11,11 @@
 #include "screens/scr_conversation.h"
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 app_state_t g_app;
 
@@ -74,10 +78,70 @@ void app_log(const char *context, const char *data)
             ts, context, data, strlen(data) > 60 ? "..." : "");
 }
 
+/*---------- Transport callbacks ----------*/
+static void on_ca_connect(int client_idx)
+{
+    char buf[64];
+    snprintf(buf, sizeof(buf), "CA client %d connected", client_idx);
+    app_log("Transport", buf);
+}
+
+static void on_ca_disconnect(int client_idx)
+{
+    char buf[64];
+    snprintf(buf, sizeof(buf), "CA client %d disconnected", client_idx);
+    app_log("Transport", buf);
+}
+
+static void on_ca_message(int client_idx, uint16_t char_uuid,
+                          const uint8_t *data, size_t len)
+{
+    (void)client_idx;
+    if (char_uuid != CHAR_UUID_RX || len == 0) return;
+
+    /* Data from CA is ciphertext (base64) to be decrypted/processed */
+    char ciphertext[MAX_CIPHER_LEN];
+    if (len >= MAX_CIPHER_LEN) len = MAX_CIPHER_LEN - 1;
+    memcpy(ciphertext, data, len);
+    ciphertext[len] = '\0';
+
+    app_log("CA->OSM", ciphertext);
+
+    /* Try to decrypt with each established contact's pubkey */
+    for (uint32_t i = 0; i < g_app.contact_count; i++) {
+        contact_t *c = &g_app.contacts[i];
+        if (c->status != CONTACT_ESTABLISHED) continue;
+
+        uint8_t peer_pubkey[CRYPTO_PUBKEY_BYTES];
+        if (crypto_b64_to_pubkey(c->public_key, peer_pubkey) != 0)
+            continue;
+
+        char plaintext[MAX_TEXT_LEN];
+        if (crypto_decrypt(ciphertext, peer_pubkey, g_app.identity.privkey,
+                           plaintext, sizeof(plaintext))) {
+            /* Success — add as received message */
+            message_t *msg = messages_add(c->id, MSG_RECEIVED, "");
+            if (msg) {
+                strncpy(msg->plaintext, plaintext, MAX_TEXT_LEN - 1);
+                strncpy(msg->ciphertext, ciphertext, MAX_CIPHER_LEN - 1);
+                c->unread_count++;
+                messages_save();
+                contacts_save();
+                char ctx[128];
+                snprintf(ctx, sizeof(ctx), "Decrypted from %s", c->name);
+                app_log(ctx, plaintext);
+            }
+            return;
+        }
+    }
+    app_log("CA->OSM", "Could not decrypt (unknown sender or bad key)");
+}
+
 /*---------- App lifecycle ----------*/
 void app_init(lv_display_t *disp,
               lv_indev_t *mouse, lv_indev_t *kb,
-              lv_group_t *dev_group, bool test_mode)
+              lv_group_t *dev_group, bool test_mode,
+              uint16_t port)
 {
     memset(&g_app, 0, sizeof(g_app));
     g_app.dev_disp = disp;
@@ -88,6 +152,7 @@ void app_init(lv_display_t *disp,
     g_app.quit = false;
     g_app.next_contact_id = 1;
     g_app.next_message_id = 1;
+    g_app.transport_port = port;
 
     mkdir("screenshots", 0755);
 
@@ -116,6 +181,20 @@ void app_init(lv_display_t *disp,
     scr_inbox_create();
     scr_conversation_create();
 
+    /* Start transport (non-blocking, OK if port unavailable in test mode) */
+    transport_init(&g_app.transport, port);
+    transport_set_callbacks(&g_app.transport, (transport_callbacks_t){
+        .on_connect    = on_ca_connect,
+        .on_disconnect = on_ca_disconnect,
+        .on_message    = on_ca_message,
+    });
+    if (!test_mode) {
+        if (transport_start(&g_app.transport))
+            app_log("Transport", "Started");
+        else
+            app_log("Transport", "Failed to start (port in use?)");
+    }
+
     /* Start on setup or home depending on identity */
     if (g_app.identity.valid) {
         app_navigate_to(SCR_HOME);
@@ -138,6 +217,7 @@ void app_init(lv_display_t *disp,
 
 void app_deinit(void)
 {
+    transport_stop(&g_app.transport);
     contacts_save();
     messages_save();
 }
@@ -152,6 +232,52 @@ void app_navigate_to(screen_id_t scr)
     if (scr >= SCR_COUNT || !g_app.screens[scr]) return;
     g_app.current_screen = scr;
     lv_screen_load(g_app.screens[scr]);
+}
+
+/*---------- Outbox (queued messages for CA) ----------*/
+void app_outbox_enqueue(uint16_t char_uuid, const char *data)
+{
+    if (g_app.outbox_count >= MAX_OUTBOX) {
+        app_log("Outbox", "FULL — dropping message");
+        return;
+    }
+    outbox_entry_t *e = &g_app.outbox[g_app.outbox_count++];
+    e->char_uuid = char_uuid;
+    strncpy(e->data, data, MAX_CIPHER_LEN - 1);
+    e->data[MAX_CIPHER_LEN - 1] = '\0';
+    app_log("Outbox", "Queued message");
+
+    /* Try to flush immediately */
+    app_outbox_flush();
+}
+
+void app_outbox_flush(void)
+{
+    if (g_app.outbox_count == 0) return;
+    if (transport_connected_count(&g_app.transport) == 0) return;
+
+    uint32_t sent = 0;
+    for (uint32_t i = 0; i < g_app.outbox_count; i++) {
+        outbox_entry_t *e = &g_app.outbox[i];
+        transport_broadcast_message(&g_app.transport, e->char_uuid,
+                                    (const uint8_t *)e->data,
+                                    strlen(e->data));
+        sent++;
+    }
+    if (sent > 0) {
+        g_app.outbox_count = 0;
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Flushed %u messages", sent);
+        app_log("Outbox", buf);
+    }
+}
+
+void app_transport_poll(void)
+{
+    transport_poll(&g_app.transport);
+
+    /* Try to flush outbox on each poll (in case CA just connected) */
+    app_outbox_flush();
 }
 
 /*---------- Test driver ----------*/
@@ -1014,6 +1140,148 @@ static void test_execute_step(void)
         app_take_screenshot("33_setup_screen");
         app_navigate_to(SCR_HOME);
         scr_home_refresh();
+        break;
+    }
+
+    case 46: { /* Transport: TCP server start/stop */
+        printf("[Step 46] Transport: TCP server start/stop\n");
+        transport_t t;
+        transport_init(&t, 19290); /* Use high port unlikely to conflict */
+        bool ok = transport_start(&t);
+        if (ok) test_pass("TCP server started");
+        else { test_fail("TCP server failed to start"); break; }
+
+        if (transport_connected_count(&t) == 0)
+            test_pass("No clients initially");
+        else
+            test_fail("Phantom client connected");
+
+        transport_stop(&t);
+        test_pass("TCP server stopped cleanly");
+        break;
+    }
+
+    case 47: { /* Transport: TCP connect + fragmentation round-trip */
+        printf("[Step 47] Transport: TCP connect + send/receive\n");
+        transport_t srv;
+        transport_init(&srv, 19291);
+        if (!transport_start(&srv)) {
+            test_fail("Server start failed");
+            break;
+        }
+
+        /* Connect as client */
+        int cfd = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in addr = {
+            .sin_family = AF_INET,
+            .sin_port = htons(19291),
+        };
+        inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+        if (connect(cfd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+            test_fail("Client connect failed");
+            close(cfd);
+            transport_stop(&srv);
+            break;
+        }
+
+        /* Poll to accept */
+        transport_poll(&srv);
+        if (transport_connected_count(&srv) == 1)
+            test_pass("Client connected via TCP");
+        else {
+            test_fail("Client not detected");
+            close(cfd);
+            transport_stop(&srv);
+            break;
+        }
+
+        /* Server sends fragmented message to client */
+        const char *test_msg = "Hello from OSM transport test!";
+        bool sent = transport_send_message(&srv, 0, CHAR_UUID_TX,
+                                           (const uint8_t *)test_msg,
+                                           strlen(test_msg));
+        if (sent) test_pass("Fragmented send OK");
+        else test_fail("Fragmented send failed");
+
+        /* Client reads data back */
+        uint8_t rbuf[512];
+        usleep(10000);
+        ssize_t n = recv(cfd, rbuf, sizeof(rbuf), 0);
+        if (n > 0) test_pass("Client received data");
+        else test_fail("Client received nothing");
+
+        close(cfd);
+        transport_stop(&srv);
+        break;
+    }
+
+    case 48: { /* Transport: outbox queue */
+        printf("[Step 48] Transport: outbox queue\n");
+        uint32_t prev_count = g_app.outbox_count;
+        g_app.outbox_count = 0;
+
+        app_outbox_enqueue(CHAR_UUID_TX, "test cipher 1");
+        app_outbox_enqueue(CHAR_UUID_TX, "test cipher 2");
+        if (g_app.outbox_count == 2)
+            test_pass("Outbox queued 2 messages");
+        else
+            test_fail("Outbox count wrong");
+
+        /* Without transport running, flush should be no-op */
+        app_outbox_flush();
+        if (g_app.outbox_count == 2)
+            test_pass("Outbox retained (no CA connected)");
+        else
+            test_fail("Outbox lost messages");
+
+        g_app.outbox_count = prev_count; /* restore */
+        break;
+    }
+
+    case 49: { /* Transport: large message fragmentation */
+        printf("[Step 49] Transport: large message fragmentation\n");
+        transport_t srv;
+        transport_init(&srv, 19292);
+        if (!transport_start(&srv)) {
+            test_fail("Server start failed");
+            break;
+        }
+
+        int cfd = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in addr = {
+            .sin_family = AF_INET,
+            .sin_port = htons(19292),
+        };
+        inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+        connect(cfd, (struct sockaddr *)&addr, sizeof(addr));
+        transport_poll(&srv);
+
+        /* Build a 2KB test message (bigger than MTU) */
+        char big_msg[2048];
+        memset(big_msg, 'A', sizeof(big_msg) - 1);
+        big_msg[sizeof(big_msg) - 1] = '\0';
+
+        bool sent = transport_send_message(&srv, 0, CHAR_UUID_TX,
+                                           (const uint8_t *)big_msg,
+                                           strlen(big_msg));
+        if (sent) test_pass("Large fragmented send OK");
+        else test_fail("Large fragmented send failed");
+
+        /* Read all fragments from client side */
+        usleep(20000);
+        uint8_t rbuf[8192];
+        size_t total = 0;
+        for (int attempt = 0; attempt < 10; attempt++) {
+            ssize_t n = recv(cfd, rbuf + total, sizeof(rbuf) - total, MSG_DONTWAIT);
+            if (n > 0) total += n;
+            else break;
+            usleep(1000);
+        }
+        if (total > 2000) test_pass("Client received large message data");
+        else test_fail("Client received insufficient data");
+
+        close(cfd);
+        transport_stop(&srv);
         break;
     }
 

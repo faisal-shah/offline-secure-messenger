@@ -37,6 +37,9 @@ static void add_contact_confirm_cb(lv_event_t *e)
             c->status = CONTACT_PENDING_SENT;
             contacts_save();
 
+            /* Send our pubkey to CA for transmission to peer */
+            app_outbox_enqueue(CHAR_UUID_TX, c->public_key);
+
             /* Log DH key output */
             {
                 char ctx[128];

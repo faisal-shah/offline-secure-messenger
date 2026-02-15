@@ -40,6 +40,7 @@ static void action_cb(lv_event_t *e)
             char our_b64[CRYPTO_PUBKEY_B64_SIZE];
             crypto_pubkey_to_b64(g_app.identity.pubkey,
                                  our_b64, sizeof(our_b64));
+            app_outbox_enqueue(CHAR_UUID_TX, our_b64);
             char ctx[128];
             snprintf(ctx, sizeof(ctx), "DH Key -> %s", c->name);
             app_log(ctx, our_b64);

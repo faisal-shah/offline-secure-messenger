@@ -10,10 +10,12 @@
 #include "../app.h"
 #include "../data/contacts.h"
 #include "../data/messages.h"
+#include "../transport/transport.h"
 #include <stdio.h>
 
 static lv_obj_t *contact_list;
 static lv_obj_t *empty_label;
+static lv_obj_t *ca_status_lbl;
 
 static void nav_contacts_cb(lv_event_t *e) { (void)e; app_navigate_to(SCR_CONTACTS); scr_contacts_refresh(); }
 static void nav_compose_cb(lv_event_t *e)  { (void)e; app_navigate_to(SCR_COMPOSE); scr_compose_refresh(); }
@@ -58,6 +60,13 @@ void scr_home_create(void)
     lv_obj_set_style_text_color(title, lv_color_hex(0x00B0FF), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
     lv_obj_align(title, LV_ALIGN_LEFT_MID, 0, 0);
+
+    /* CA connection indicator */
+    ca_status_lbl = lv_label_create(header);
+    lv_label_set_text(ca_status_lbl, LV_SYMBOL_CLOSE " CA");
+    lv_obj_set_style_text_color(ca_status_lbl, lv_color_hex(0xFF1744), 0);
+    lv_obj_set_style_text_font(ca_status_lbl, &lv_font_montserrat_10, 0);
+    lv_obj_align(ca_status_lbl, LV_ALIGN_RIGHT_MID, 0, 0);
 
     /* Main area */
     contact_list = lv_obj_create(scr);
@@ -114,6 +123,18 @@ void scr_home_create(void)
 
 void scr_home_refresh(void)
 {
+    /* Update CA connection indicator */
+    int ca_count = transport_connected_count(&g_app.transport);
+    if (ca_count > 0) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), LV_SYMBOL_OK " CA:%d", ca_count);
+        lv_label_set_text(ca_status_lbl, buf);
+        lv_obj_set_style_text_color(ca_status_lbl, lv_color_hex(0x00E676), 0);
+    } else {
+        lv_label_set_text(ca_status_lbl, LV_SYMBOL_CLOSE " CA");
+        lv_obj_set_style_text_color(ca_status_lbl, lv_color_hex(0xFF1744), 0);
+    }
+
     /* Clear dynamic children (keep empty_label) */
     uint32_t child_cnt = lv_obj_get_child_count(contact_list);
     for (int i = child_cnt - 1; i >= 0; i--) {
