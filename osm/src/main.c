@@ -60,6 +60,8 @@ int main(int argc, char *argv[])
         app_transport_poll();
         if (test_mode) {
             app_test_tick();
+        } else {
+            app_poll_stdin();
         }
         usleep(sleep_ms * 1000);
     }

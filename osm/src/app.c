@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -128,10 +129,11 @@ static void handle_key_exchange_msg(const char *pubkey_b64)
     app_log("CA->OSM", "KEX queued for assignment");
     app_pending_keys_save();
 
-    /* Navigate to assign screen or refresh relevant screen */
-    if (g_app.current_screen == SCR_HOME) {
-        scr_home_refresh();
-    } else if (g_app.current_screen == SCR_ASSIGN_KEY) {
+    /* Always navigate to the assign screen so the user sees the key */
+    if (g_app.current_screen == SCR_ASSIGN_KEY) {
+        scr_assign_key_refresh();
+    } else {
+        app_navigate_to(SCR_ASSIGN_KEY);
         scr_assign_key_refresh();
     }
 }
@@ -443,6 +445,177 @@ void app_pending_keys_load(void)
         p = end + 1;
     }
     free(buf);
+}
+
+/*---------- Non-blocking stdin command processing ----------*/
+static bool stdin_nonblock_set = false;
+
+static void stdin_set_nonblocking(void)
+{
+    if (stdin_nonblock_set) return;
+    int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+    if (flags >= 0) fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
+    /* Ensure stdout is line-buffered for pipe-connected processes */
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    stdin_nonblock_set = true;
+}
+
+static void process_stdin_command(char *cmd)
+{
+    /* Strip trailing newline */
+    size_t len = strlen(cmd);
+    while (len > 0 && (cmd[len-1] == '\n' || cmd[len-1] == '\r'))
+        cmd[--len] = '\0';
+    if (len == 0) return;
+
+    /* CMD:ADD:<name> — create contact + initiate KEX */
+    if (strncmp(cmd, "CMD:ADD:", 8) == 0) {
+        const char *name = cmd + 8;
+        contact_t *c = contacts_add(name);
+        if (!c) { printf("CMD:ERR:add_failed\n"); fflush(stdout); return; }
+        crypto_pubkey_to_b64(g_app.identity.pubkey, c->public_key, MAX_KEY_LEN);
+        c->status = CONTACT_PENDING_SENT;
+        contacts_save();
+        app_send_key_exchange(c->public_key);
+        app_outbox_flush();  /* Send immediately so test can capture */
+        char ctx[128];
+        snprintf(ctx, sizeof(ctx), "DH Key -> %s (initiated)", c->name);
+        app_log(ctx, c->public_key);
+        printf("CMD:OK:add:%s:%u\n", c->name, c->id);
+        fflush(stdout);
+    }
+    /* CMD:ASSIGN:<name> — assign pending key[0] to existing PENDING_SENT contact */
+    else if (strncmp(cmd, "CMD:ASSIGN:", 11) == 0) {
+        const char *name = cmd + 11;
+        if (g_app.pending_key_count == 0) {
+            printf("CMD:ERR:no_pending_keys\n"); fflush(stdout); return;
+        }
+        contact_t *c = NULL;
+        for (uint32_t i = 0; i < g_app.contact_count; i++) {
+            if (strcmp(g_app.contacts[i].name, name) == 0) {
+                c = &g_app.contacts[i]; break;
+            }
+        }
+        if (!c) { printf("CMD:ERR:contact_not_found:%s\n", name); fflush(stdout); return; }
+        const char *pubkey = g_app.pending_keys[0].pubkey_b64;
+        strncpy(c->public_key, pubkey, MAX_KEY_LEN - 1);
+        c->status = CONTACT_ESTABLISHED;
+        contacts_save();
+        app_pending_key_remove(0);
+        app_pending_keys_save();
+        printf("CMD:OK:assign:%s:ESTABLISHED\n", name);
+        fflush(stdout);
+        char ctx[128];
+        snprintf(ctx, sizeof(ctx), "KEX assigned to %s → ESTABLISHED", name);
+        app_log(ctx, pubkey);
+    }
+    /* CMD:CREATE:<name> — create new contact from pending key[0] (PENDING_RECEIVED) */
+    else if (strncmp(cmd, "CMD:CREATE:", 11) == 0) {
+        const char *name = cmd + 11;
+        if (g_app.pending_key_count == 0) {
+            printf("CMD:ERR:no_pending_keys\n"); fflush(stdout); return;
+        }
+        const char *pubkey = g_app.pending_keys[0].pubkey_b64;
+        contact_t *c = contacts_add(name);
+        if (!c) { printf("CMD:ERR:create_failed\n"); fflush(stdout); return; }
+        strncpy(c->public_key, pubkey, MAX_KEY_LEN - 1);
+        c->status = CONTACT_PENDING_RECEIVED;
+        contacts_save();
+        app_pending_key_remove(0);
+        app_pending_keys_save();
+        printf("CMD:OK:create:%s:PENDING_RECEIVED:%u\n", name, c->id);
+        fflush(stdout);
+        char ctx[128];
+        snprintf(ctx, sizeof(ctx), "KEX → new contact '%s' (PENDING_RECEIVED)", name);
+        app_log(ctx, pubkey);
+    }
+    /* CMD:COMPLETE:<name> — complete exchange for PENDING_RECEIVED contact */
+    else if (strncmp(cmd, "CMD:COMPLETE:", 13) == 0) {
+        const char *name = cmd + 13;
+        contact_t *c = NULL;
+        for (uint32_t i = 0; i < g_app.contact_count; i++) {
+            if (strcmp(g_app.contacts[i].name, name) == 0) {
+                c = &g_app.contacts[i]; break;
+            }
+        }
+        if (!c) { printf("CMD:ERR:contact_not_found:%s\n", name); fflush(stdout); return; }
+        if (c->status != CONTACT_PENDING_RECEIVED) {
+            printf("CMD:ERR:not_pending_received:%s\n", name); fflush(stdout); return;
+        }
+        char our_b64[CRYPTO_PUBKEY_B64_SIZE];
+        crypto_pubkey_to_b64(g_app.identity.pubkey, our_b64, sizeof(our_b64));
+        app_send_key_exchange(our_b64);
+        app_outbox_flush();  /* Send immediately so test can capture */
+        c->status = CONTACT_ESTABLISHED;
+        contacts_save();
+        printf("CMD:OK:complete:%s:ESTABLISHED\n", name);
+        fflush(stdout);
+        char ctx[128];
+        snprintf(ctx, sizeof(ctx), "DH Key -> %s (completed)", name);
+        app_log(ctx, our_b64);
+    }
+    /* CMD:STATE — dump contacts and pending keys */
+    else if (strcmp(cmd, "CMD:STATE") == 0) {
+        fprintf(stdout, "CMD:STATE:contacts=%u,pending=%u\n",
+               g_app.contact_count, g_app.pending_key_count);
+        fflush(stdout);
+        for (uint32_t i = 0; i < g_app.contact_count; i++) {
+            contact_t *c = &g_app.contacts[i];
+            const char *st = c->status == CONTACT_ESTABLISHED ? "ESTABLISHED" :
+                             c->status == CONTACT_PENDING_SENT ? "PENDING_SENT" :
+                             "PENDING_RECEIVED";
+            fprintf(stdout, "CMD:CONTACT:%u:%s:%s:%s\n",
+                   c->id, c->name, st, c->public_key);
+            fflush(stdout);
+        }
+        for (uint32_t i = 0; i < g_app.pending_key_count; i++) {
+            fprintf(stdout, "CMD:PENDING:%u:%s\n", i, g_app.pending_keys[i].pubkey_b64);
+            fflush(stdout);
+        }
+        fprintf(stdout, "CMD:STATE:END\n");
+        fflush(stdout);
+    }
+    /* CMD:IDENTITY — dump our pubkey */
+    else if (strcmp(cmd, "CMD:IDENTITY") == 0) {
+        char b64[CRYPTO_PUBKEY_B64_SIZE];
+        crypto_pubkey_to_b64(g_app.identity.pubkey, b64, sizeof(b64));
+        printf("CMD:IDENTITY:%s\n", b64);
+        fflush(stdout);
+    }
+    /* CMD:KEYGEN — generate keypair (if not already valid) */
+    else if (strcmp(cmd, "CMD:KEYGEN") == 0) {
+        if (g_app.identity.valid) {
+            printf("CMD:OK:keygen:already_valid\n");
+        } else {
+            crypto_generate_keypair(&g_app.identity);
+            identity_save(&g_app.identity);
+            app_navigate_to(SCR_HOME);
+            scr_home_refresh();
+            printf("CMD:OK:keygen:generated\n");
+        }
+        fflush(stdout);
+    }
+    else {
+        printf("CMD:ERR:unknown_command\n");
+        fflush(stdout);
+    }
+}
+
+void app_poll_stdin(void)
+{
+    stdin_set_nonblocking();
+    char line[1024];
+    ssize_t n = read(STDIN_FILENO, line, sizeof(line) - 1);
+    if (n <= 0) return;
+    line[n] = '\0';
+
+    /* Handle multiple lines in one read */
+    char *saveptr;
+    char *tok = strtok_r(line, "\n", &saveptr);
+    while (tok) {
+        process_stdin_command(tok);
+        tok = strtok_r(NULL, "\n", &saveptr);
+    }
 }
 
 /*---------- Test driver ----------*/

@@ -165,4 +165,7 @@ void app_pending_keys_load(void);
 /* Screenshot helper */
 void app_take_screenshot(const char *name);
 
+/* Non-blocking stdin command processing (for E2E test automation) */
+void app_poll_stdin(void);
+
 #endif /* APP_H */
