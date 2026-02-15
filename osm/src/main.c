@@ -5,6 +5,7 @@
 
 #include "lvgl.h"
 #include "app.h"
+#include <stdio.h>
 #include <unistd.h>
 #include <time.h>
 #include <stdlib.h>
@@ -32,6 +33,12 @@ int main(int argc, char *argv[])
         else if (strcmp(argv[i], "--name") == 0 && i + 1 < argc)
             name = argv[++i];
     }
+
+#ifdef TRANSPORT_BLE
+    printf("[OSM] Transport: BLE (BlueZ)\n");
+#else
+    printf("[OSM] Transport: TCP (port %d)\n", port);
+#endif
 
     lv_init();
     lv_tick_set_cb(tick_get_cb);

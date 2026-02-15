@@ -17,7 +17,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
-#include "../tweetnacl.h"
+#include <sys/uio.h>
 
 /* TCP frame header */
 #pragma pack(push, 1)
@@ -25,14 +25,6 @@ typedef struct {
     uint32_t msg_len;    /* total bytes after this header */
     uint16_t char_uuid;  /* characteristic UUID */
 } tcp_frame_header_t;
-#pragma pack(pop)
-
-/* Fragment header */
-#pragma pack(push, 1)
-typedef struct {
-    uint8_t  flags;
-    uint16_t seq;
-} frag_header_t;
 #pragma pack(pop)
 
 static void set_nonblocking(int fd)
@@ -147,69 +139,6 @@ static void accept_new_clients(transport_t *t)
         t->callbacks.on_connect(slot);
 }
 
-/* Process a single reassembled fragment payload */
-static void process_fragment(transport_t *t, int client_idx,
-                             uint16_t char_uuid,
-                             const uint8_t *frag_data, size_t frag_len)
-{
-    if (frag_len < sizeof(frag_header_t)) return;
-
-    transport_client_t *c = &t->clients[client_idx];
-    const frag_header_t *fh = (const frag_header_t *)frag_data;
-    const uint8_t *payload = frag_data + sizeof(frag_header_t);
-    size_t payload_len = frag_len - sizeof(frag_header_t);
-
-    /* Handle incoming ACK */
-    if (fh->flags & FRAG_FLAG_ACK) {
-        if (payload_len >= TRANSPORT_ACK_ID_LEN && t->callbacks.on_ack)
-            t->callbacks.on_ack(client_idx, payload);
-        return;
-    }
-
-    if (fh->flags & FRAG_FLAG_START) {
-        c->rx_len = 0;
-        c->rx_expected_seq = 0;
-        c->rx_active = true;
-
-        /* START packet includes 2-byte total_len before payload */
-        if (payload_len < 2) return;
-        /* uint16_t total_len = payload[0] | (payload[1] << 8); */
-        payload += 2;
-        payload_len -= 2;
-    }
-
-    if (!c->rx_active) return;
-    if (fh->seq != c->rx_expected_seq) {
-        /* Sequence mismatch — reset */
-        c->rx_active = false;
-        c->rx_len = 0;
-        return;
-    }
-
-    /* Append payload to reassembly buffer */
-    if (c->rx_len + payload_len > TRANSPORT_MAX_MSG_SIZE) {
-        c->rx_active = false;
-        c->rx_len = 0;
-        return;
-    }
-    memcpy(c->rx_buf + c->rx_len, payload, payload_len);
-    c->rx_len += payload_len;
-    c->rx_expected_seq++;
-
-    if (fh->flags & FRAG_FLAG_END) {
-        /* Complete message reassembled — send ACK back to sender */
-        uint8_t ack_id[TRANSPORT_ACK_ID_LEN];
-        transport_compute_msg_id(c->rx_buf, c->rx_len, ack_id);
-        transport_send_ack(t, client_idx, ack_id);
-
-        if (t->callbacks.on_message)
-            t->callbacks.on_message(client_idx, char_uuid,
-                                    c->rx_buf, c->rx_len);
-        c->rx_active = false;
-        c->rx_len = 0;
-    }
-}
-
 /* Read TCP frames from a client (handles partial frames across reads) */
 static void read_client(transport_t *t, int idx)
 {
@@ -218,7 +147,6 @@ static void read_client(transport_t *t, int idx)
     /* Append new data to the per-client TCP buffer */
     size_t space = sizeof(c->tcp_buf) - c->tcp_buf_len;
     if (space == 0) {
-        /* Buffer full with no complete frame — reset */
         c->tcp_buf_len = 0;
         return;
     }
@@ -226,7 +154,6 @@ static void read_client(transport_t *t, int idx)
     ssize_t n = recv(c->fd, c->tcp_buf + c->tcp_buf_len, space, 0);
     if (n <= 0) {
         if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
-            /* Disconnect */
             close(c->fd);
             c->fd = -1;
             c->state = CLIENT_DISCONNECTED;
@@ -251,15 +178,14 @@ static void read_client(transport_t *t, int idx)
         hdr.char_uuid = ntohs(hdr.char_uuid);
 
         if (pos + sizeof(tcp_frame_header_t) + hdr.msg_len > c->tcp_buf_len)
-            break;  /* Incomplete frame — wait for more data */
+            break;
 
         pos += sizeof(tcp_frame_header_t);
-        process_fragment(t, idx, hdr.char_uuid,
-                         c->tcp_buf + pos, hdr.msg_len);
+        transport_process_fragment(t, idx, hdr.char_uuid,
+                                   c->tcp_buf + pos, hdr.msg_len);
         pos += hdr.msg_len;
     }
 
-    /* Shift unconsumed data to front of buffer */
     if (pos > 0) {
         size_t remaining = c->tcp_buf_len - pos;
         if (remaining > 0)
@@ -324,94 +250,7 @@ bool transport_send_raw(transport_t *t, int client_idx,
     return sent == (ssize_t)(sizeof(hdr) + len);
 }
 
-/* Send with fragmentation */
-bool transport_send_message(transport_t *t, int client_idx,
-                            uint16_t char_uuid,
-                            const uint8_t *data, size_t len)
-{
-    size_t max_payload = TRANSPORT_MTU - sizeof(frag_header_t);
-    uint16_t seq = 0;
-    size_t offset = 0;
-
-    while (offset < len) {
-        size_t chunk = len - offset;
-        bool is_start = (offset == 0);
-        bool is_end = false;
-
-        /* START packet reserves 2 bytes for total_len */
-        size_t overhead = is_start ? 2 : 0;
-        if (chunk + overhead > max_payload)
-            chunk = max_payload - overhead;
-        if (offset + chunk >= len)
-            is_end = true;
-
-        /* Build fragment */
-        uint8_t frag[TRANSPORT_MTU];
-        frag_header_t *fh = (frag_header_t *)frag;
-        fh->flags = 0;
-        if (is_start) fh->flags |= FRAG_FLAG_START;
-        if (is_end)   fh->flags |= FRAG_FLAG_END;
-        fh->seq = seq;
-
-        size_t frag_len = sizeof(frag_header_t);
-
-        if (is_start) {
-            /* Prepend 2-byte total length */
-            frag[frag_len++] = (uint8_t)(len & 0xFF);
-            frag[frag_len++] = (uint8_t)((len >> 8) & 0xFF);
-        }
-
-        memcpy(frag + frag_len, data + offset, chunk);
-        frag_len += chunk;
-
-        if (!transport_send_raw(t, client_idx, char_uuid, frag, frag_len))
-            return false;
-
-        offset += chunk;
-        seq++;
-    }
-    return true;
-}
-
-void transport_broadcast_message(transport_t *t, uint16_t char_uuid,
-                                 const uint8_t *data, size_t len)
-{
-    for (int i = 0; i < TRANSPORT_MAX_CLIENTS; i++) {
-        if (t->clients[i].state == CLIENT_CONNECTED)
-            transport_send_message(t, i, char_uuid, data, len);
-    }
-}
-
-int transport_connected_count(const transport_t *t)
-{
-    int count = 0;
-    for (int i = 0; i < TRANSPORT_MAX_CLIENTS; i++) {
-        if (t->clients[i].state == CLIENT_CONNECTED) count++;
-    }
-    return count;
-}
-
-void transport_set_callbacks(transport_t *t, transport_callbacks_t cbs)
-{
-    t->callbacks = cbs;
-}
-
-void transport_compute_msg_id(const uint8_t *data, size_t len,
-                              uint8_t out[TRANSPORT_ACK_ID_LEN])
-{
-    uint8_t hash[crypto_hash_sha512_BYTES];
-    crypto_hash_sha512(hash, data, len);
-    memcpy(out, hash, TRANSPORT_ACK_ID_LEN);
-}
-
-bool transport_send_ack(transport_t *t, int client_idx,
-                        const uint8_t msg_id[TRANSPORT_ACK_ID_LEN])
-{
-    /* ACK frame: [flags=ACK][seq=0][msg_id (8 bytes)] */
-    uint8_t frag[sizeof(frag_header_t) + TRANSPORT_ACK_ID_LEN];
-    frag_header_t *fh = (frag_header_t *)frag;
-    fh->flags = FRAG_FLAG_ACK;
-    fh->seq = 0;
-    memcpy(frag + sizeof(frag_header_t), msg_id, TRANSPORT_ACK_ID_LEN);
-    return transport_send_raw(t, client_idx, CHAR_UUID_TX, frag, sizeof(frag));
-}
+/* TCP transport only provides init, start, stop, poll, and send_raw.
+ * All other transport_* functions (send_message, broadcast, connected_count,
+ * set_callbacks, compute_msg_id, send_ack, process_fragment) are in
+ * transport_common.c shared by all backends. */

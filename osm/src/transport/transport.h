@@ -36,19 +36,21 @@ typedef enum {
 } client_state_t;
 
 typedef struct {
-    int             fd;
     client_state_t  state;
     char            name[32];
 
-    /* Reassembly buffer for incoming fragments */
+    /* Reassembly buffer for incoming fragments (common to all transports) */
     uint8_t         rx_buf[TRANSPORT_MAX_MSG_SIZE];
     size_t          rx_len;
     uint16_t        rx_expected_seq;
     bool            rx_active;
 
-    /* TCP stream buffer for partial frame handling */
+#ifndef TRANSPORT_BLE
+    /* TCP-specific */
+    int             fd;
     uint8_t         tcp_buf[TRANSPORT_MAX_MSG_SIZE];
     size_t          tcp_buf_len;
+#endif
 } transport_client_t;
 
 /* ACK message ID: first 8 bytes of SHA-256 of reassembled payload */
@@ -70,11 +72,15 @@ typedef struct {
 } transport_callbacks_t;
 
 typedef struct {
-    int                 server_fd;
-    uint16_t            port;
     bool                running;
     transport_client_t  clients[TRANSPORT_MAX_CLIENTS];
     transport_callbacks_t callbacks;
+
+#ifndef TRANSPORT_BLE
+    /* TCP-specific */
+    int                 server_fd;
+    uint16_t            port;
+#endif
 } transport_t;
 
 /* Initialize transport (does not start listening) */
@@ -116,5 +122,10 @@ void transport_compute_msg_id(const uint8_t *data, size_t len,
 /* Send an ACK for a received message */
 bool transport_send_ack(transport_t *t, int client_idx,
                         const uint8_t msg_id[TRANSPORT_ACK_ID_LEN]);
+
+/* Process a received fragment — shared reassembly logic for all backends */
+void transport_process_fragment(transport_t *t, int client_idx,
+                                uint16_t char_uuid,
+                                const uint8_t *data, size_t len);
 
 #endif /* TRANSPORT_H */

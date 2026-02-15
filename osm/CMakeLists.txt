@@ -13,10 +13,20 @@ add_subdirectory(lvgl)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SDL2 REQUIRED sdl2)
 
+# Transport backend selection
+option(TRANSPORT_BLE "Use BlueZ BLE transport instead of TCP" OFF)
+
 # Main executable
 file(GLOB_RECURSE APP_SOURCES
     "src/*.c"
 )
+
+if(TRANSPORT_BLE)
+    list(FILTER APP_SOURCES EXCLUDE REGEX "transport_tcp\\.c$")
+    pkg_check_modules(DBUS REQUIRED dbus-1)
+else()
+    list(FILTER APP_SOURCES EXCLUDE REGEX "transport_ble\\.c$")
+endif()
 
 add_executable(${PROJECT_NAME} ${APP_SOURCES})
 
@@ -31,6 +41,12 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     ${SDL2_LIBRARIES}
     m
 )
+
+if(TRANSPORT_BLE)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE TRANSPORT_BLE)
+    target_include_directories(${PROJECT_NAME} PRIVATE ${DBUS_INCLUDE_DIRS})
+    target_link_libraries(${PROJECT_NAME} PRIVATE ${DBUS_LIBRARIES})
+endif()
 
 target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-unused-parameter)
 

@@ -47,7 +47,8 @@ offline-secure-messenger/
 ├── companion-app/          # Companion App (Kotlin Multiplatform + Compose)
 │   ├── shared/             # Common code (model, transport, UI)
 │   └── desktopApp/         # Desktop entry point
-├── tests/                  # E2E integration tests (planned)
+├── tests/                  # Integration tests (E2E TCP + BLE)
+├── AGENTS.md               # AI assistant context (architecture, build, test)
 ├── LICENSE
 └── README.md               # This file
 ```
@@ -67,6 +68,23 @@ Kotlin Multiplatform + Compose Multiplatform targeting Android and desktop.
 Communicates with the OSM over TCP (desktop simulation) or BLE (Android).
 See [`companion-app/README.md`](companion-app/README.md) for details.
 
+## Build Targets
+
+| Target | Transport | Build Command | Notes |
+|--------|-----------|---------------|-------|
+| **OSM (TCP)** | TCP socket | `cmake .. && make` | Desktop simulator (default) |
+| **OSM (BLE)** | BlueZ GATT | `cmake .. -DTRANSPORT_BLE=ON && make` | Requires `libdbus-1-dev`, root for BlueZ |
+| **Desktop CA** | TCP | `./gradlew :desktopApp:run` | JDK 11+, auto-discovers OSMs |
+| **Android CA** | BLE | `./gradlew :androidApp:assembleDebug` | Android SDK API 34+, JDK 17+ |
+
+### BLE Transport
+
+In BLE mode the OSM runs as a GATT server (peripheral) advertising service
+UUID `0000fe00-0000-1000-8000-00805f9b34fb`. The CA connects as a GATT client
+and exchanges ciphertext fragments via the TX (notify, `0xFE02`) and RX
+(write, `0xFE03`) characteristics. An INFO characteristic (`0xFE05`) provides
+the device name. Messages are fragmented to fit the BLE MTU (200 bytes).
+
 ## Quick Start
 
 ```bash
@@ -74,12 +92,17 @@ See [`companion-app/README.md`](companion-app/README.md) for details.
 git clone --recurse-submodules <repo-url>
 cd offline-secure-messenger
 
-# Build and run OSM simulator
+# Build and run OSM simulator (TCP, default)
 cd osm
 mkdir -p build && cd build
 cmake .. && make -j$(nproc)
 ./secure_communicator              # Interactive mode (port 19200)
 ./secure_communicator --test       # Automated tests (69 tests)
+
+# Build OSM with BLE transport (optional)
+mkdir -p ../build_ble && cd ../build_ble
+cmake .. -DTRANSPORT_BLE=ON && make -j$(nproc)
+sudo ./secure_communicator         # Needs root for BlueZ D-Bus
 
 # In another terminal — build and run Companion App
 cd companion-app
