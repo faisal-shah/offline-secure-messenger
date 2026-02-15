@@ -1,5 +1,0 @@
-[
-  {"id":1, "cid":1, "dir":1, "ts":1771169443, "text":"Hello Bob, first msg!"},
-  {"id":2, "cid":1, "dir":1, "ts":1771169444, "text":"Second message to Bob"},
-  {"id":3, "cid":1, "dir":1, "ts":1771169444, "text":"Whitespace test"}
-]

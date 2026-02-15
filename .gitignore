@@ -9,3 +9,6 @@ companion-app/.gradle/
 companion-app/build/
 companion-app/*/build/
 companion-app/local.properties
+
+__pycache__/
+tests/data_*.json
