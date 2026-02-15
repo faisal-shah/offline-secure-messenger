@@ -33,6 +33,9 @@ static void send_reply_cb(lv_event_t *e)
 
     message_t *msg = messages_add(g_app.selected_contact_id, MSG_SENT, text);
     if (msg) {
+        /* Send ciphertext to CA via transport */
+        app_send_encrypted_msg(msg->ciphertext);
+
         contact_t *c = contacts_find_by_id(g_app.selected_contact_id);
         if (c) {
             char ctx[128];
@@ -307,3 +310,6 @@ void scr_conversation_refresh(void)
     /* Scroll to bottom */
     lv_obj_scroll_to_y(msg_list, LV_COORD_MAX, LV_ANIM_OFF);
 }
+
+lv_obj_t *scr_conversation_get_reply_ta(void) { return reply_ta; }
+lv_obj_t *scr_conversation_get_send_btn(void) { return send_btn; }

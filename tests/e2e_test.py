@@ -1261,6 +1261,420 @@ def test_full_kex_and_messaging_isolated():
         shutil.rmtree(bob_dir, ignore_errors=True)
 
 
+def test_ui_driven_kex_and_messaging():
+    """Test 18: Full KEX + 12 messages each direction via UI-driven commands.
+
+    Unlike tests 16-17 which bypass the UI via CMD:ADD/CMD:SEND, this test
+    drives actual LVGL widgets (buttons, textareas, dropdowns) through the
+    CMD:UI_* protocol. This exercises the same code paths as a real user
+    and catches bugs like the send_reply_cb missing app_send_encrypted_msg().
+    """
+    print("\n[Test 18] UI-driven KEX + many-message stress test")
+
+    try:
+        import nacl.bindings
+    except ImportError:
+        print("  SKIP: PyNaCl not installed (pip install pynacl)")
+        return
+
+    import json as json_mod
+    import tempfile
+    import shutil
+
+    alice_dir = tempfile.mkdtemp(prefix="osm_ui_alice_")
+    bob_dir = tempfile.mkdtemp(prefix="osm_ui_bob_")
+
+    def start_osm_in_dir(workdir, port, name):
+        env = os.environ.copy()
+        env["SDL_VIDEODRIVER"] = "dummy"
+        proc = subprocess.Popen(
+            [os.path.abspath(BINARY), "--port", str(port)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            cwd=workdir,
+        )
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.5)
+                s.connect(("127.0.0.1", port))
+                s.close()
+                return proc
+            except (ConnectionRefusedError, OSError):
+                time.sleep(0.1)
+        return None
+
+    def send_cmd(proc, cmd, timeout=5.0):
+        import select
+        proc.stdin.write(f"{cmd}\n".encode())
+        proc.stdin.flush()
+        is_state = cmd.strip() == "CMD:STATE"
+        buf = b""
+        fd = proc.stdout.fileno()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.2)
+            if ready:
+                chunk = os.read(fd, 4096)
+                if not chunk:
+                    break
+                buf += chunk
+                text = buf.decode(errors="replace")
+                if is_state and "CMD:STATE:END" in text:
+                    break
+                for line in text.split("\n"):
+                    line = line.strip()
+                    if not is_state and line.startswith(("CMD:OK:", "CMD:ERR:", "CMD:IDENTITY:")):
+                        deadline = 0
+                        break
+            if proc.poll() is not None:
+                break
+        result = []
+        for line in buf.decode(errors="replace").split("\n"):
+            line = line.strip()
+            if line.startswith("CMD:"):
+                result.append(line)
+        return "\n".join(result)
+
+    alice_proc = None
+    bob_proc = None
+    ca_alice = None
+    ca_bob = None
+
+    try:
+        alice_proc = start_osm_in_dir(alice_dir, PORT_A, "Alice")
+        assert alice_proc, "Alice failed to start"
+        bob_proc = start_osm_in_dir(bob_dir, PORT_B, "Bob")
+        assert bob_proc, "Bob failed to start"
+        time.sleep(0.5)
+
+        ca_alice = TcpClient(PORT_A, "CA-Alice")
+        assert ca_alice.connect(), "CA-Alice failed"
+        ca_bob = TcpClient(PORT_B, "CA-Bob")
+        assert ca_bob.connect(), "CA-Bob failed"
+        time.sleep(0.3)
+
+        # Generate keypairs
+        resp = send_cmd(alice_proc, "CMD:KEYGEN")
+        assert "CMD:OK:keygen" in resp, f"Alice keygen failed: {resp}"
+        resp = send_cmd(bob_proc, "CMD:KEYGEN")
+        assert "CMD:OK:keygen" in resp, f"Bob keygen failed: {resp}"
+
+        alice_id = send_cmd(alice_proc, "CMD:IDENTITY")
+        alice_pubkey_b64 = alice_id.split("CMD:IDENTITY:")[1].strip()
+        bob_id = send_cmd(bob_proc, "CMD:IDENTITY")
+        bob_pubkey_b64 = bob_id.split("CMD:IDENTITY:")[1].strip()
+        print(f"  Alice pubkey: {alice_pubkey_b64[:20]}...")
+        print(f"  Bob pubkey:   {bob_pubkey_b64[:20]}...")
+
+        # === STEP 1: Alice adds contact "Bob" via UI ===
+        resp = send_cmd(alice_proc, "CMD:UI_ADD_CONTACT:Bob")
+        assert "CMD:OK:ui_add_contact:Bob" in resp, f"UI add contact failed: {resp}"
+        print("  PASS: Alice UI added contact Bob (PENDING_SENT)")
+
+        # Capture Alice's KEX message from CA
+        time.sleep(0.5)
+        alice_outbox = ca_alice.poll(timeout=1.0)
+        assert len(alice_outbox) > 0, "Alice should have sent KEX to CA"
+        _, kex_data = alice_outbox[0]
+        kex_msg = kex_data.decode()
+        assert kex_msg.startswith("OSM:KEY:"), f"Bad KEX: {kex_msg}"
+        assert alice_pubkey_b64 in kex_msg
+        print(f"  PASS: Alice's KEX captured from CA")
+
+        # === STEP 2: Deliver Alice's key to Bob ===
+        ca_bob.send_message(CHAR_UUID_RX, kex_msg.encode())
+        time.sleep(0.5)
+
+        state = send_cmd(bob_proc, "CMD:STATE")
+        assert "pending=1" in state, f"Bob should have 1 pending: {state}"
+        print("  PASS: Bob received Alice's key")
+
+        # === STEP 3: Bob creates contact "Alice" from pending key via UI ===
+        resp = send_cmd(bob_proc, "CMD:UI_NEW_FROM_PENDING:Alice")
+        assert "CMD:OK:ui_new_from_pending:Alice" in resp, f"UI new from pending failed: {resp}"
+        print("  PASS: Bob UI created contact Alice (PENDING_RECEIVED)")
+
+        # === STEP 4: Bob completes KEX via UI (clicks action button) ===
+        resp = send_cmd(bob_proc, "CMD:UI_COMPLETE_KEX:Alice")
+        assert "ESTABLISHED" in resp, f"UI complete KEX failed: {resp}"
+        print("  PASS: Bob UI completed KEX → ESTABLISHED")
+
+        # Capture Bob's KEX response
+        time.sleep(0.5)
+        bob_outbox = ca_bob.poll(timeout=1.0)
+        assert len(bob_outbox) > 0, "Bob should have sent KEX to CA"
+        _, bob_kex_data = bob_outbox[0]
+        bob_kex_msg = bob_kex_data.decode()
+        assert bob_kex_msg.startswith("OSM:KEY:")
+        assert bob_pubkey_b64 in bob_kex_msg
+        print("  PASS: Bob's KEX response captured")
+
+        # === STEP 5: Deliver Bob's key to Alice ===
+        ca_alice.send_message(CHAR_UUID_RX, bob_kex_msg.encode())
+        time.sleep(0.5)
+
+        state = send_cmd(alice_proc, "CMD:STATE")
+        assert "pending=1" in state, f"Alice should have 1 pending: {state}"
+
+        # === STEP 6: Alice assigns pending key to "Bob" via UI ===
+        resp = send_cmd(alice_proc, "CMD:UI_ASSIGN_PENDING:Bob")
+        assert "CMD:OK:ui_assign_pending:Bob" in resp, f"UI assign pending failed: {resp}"
+        print("  PASS: Alice UI assigned key → ESTABLISHED")
+
+        # Verify both ESTABLISHED
+        alice_state = send_cmd(alice_proc, "CMD:STATE")
+        bob_state = send_cmd(bob_proc, "CMD:STATE")
+        assert "ESTABLISHED" in alice_state
+        assert "ESTABLISHED" in bob_state
+        print("  PASS: Both contacts ESTABLISHED via UI")
+
+        # Read private keys for PyNaCl encryption
+        with open(os.path.join(alice_dir, "data_identity.json")) as f:
+            alice_ident = json_mod.load(f)
+        with open(os.path.join(bob_dir, "data_identity.json")) as f:
+            bob_ident = json_mod.load(f)
+
+        alice_sk = base64.b64decode(alice_ident["privkey"])
+        alice_pk = base64.b64decode(alice_ident["pubkey"])
+        bob_sk = base64.b64decode(bob_ident["privkey"])
+        bob_pk = base64.b64decode(bob_ident["pubkey"])
+
+        def encrypt_msg(plaintext, peer_pk, my_sk):
+            nonce = nacl.bindings.randombytes(24)
+            ct = nacl.bindings.crypto_box(plaintext.encode(), nonce, peer_pk, my_sk)
+            return base64.b64encode(nonce + ct).decode()
+
+        # === STEP 7: Send 12 messages Alice→Bob via UI Compose ===
+        alice_messages = [f"Alice msg {i+1}: Hello Bob! #{i+1}" for i in range(12)]
+        for msg in alice_messages:
+            resp = send_cmd(alice_proc, f"CMD:UI_COMPOSE:Bob:{msg}")
+            assert "CMD:OK:ui_compose:Bob" in resp, f"UI compose failed: {resp}"
+        print(f"  PASS: Alice sent {len(alice_messages)} messages via UI Compose")
+
+        # Capture all from CA-Alice and deliver to Bob
+        time.sleep(1.0)
+        alice_out = ca_alice.poll(timeout=2.0)
+        assert len(alice_out) >= 12, f"Expected 12 msgs from Alice CA, got {len(alice_out)}"
+        for _, data in alice_out:
+            msg_str = data.decode()
+            if msg_str.startswith("OSM:MSG:"):
+                ca_bob.send_message(CHAR_UUID_RX, data)
+                time.sleep(0.1)
+        time.sleep(1.0)
+
+        # Verify Bob received them
+        resp = send_cmd(bob_proc, "CMD:RECV_COUNT:Alice")
+        assert "CMD:OK:recv_count:Alice:" in resp, f"Recv count failed: {resp}"
+        bob_recv = int(resp.split(":")[-1])
+        assert bob_recv == 12, f"Bob should have 12 msgs from Alice, got {bob_recv}"
+        print(f"  PASS: Bob received all {bob_recv} messages from Alice")
+
+        # === STEP 8: Send 12 messages Bob→Alice via UI (Compose + Reply mix) ===
+        # First 6 via Compose screen
+        bob_messages = [f"Bob msg {i+1}: Hey Alice! #{i+1}" for i in range(12)]
+        for msg in bob_messages[:6]:
+            resp = send_cmd(bob_proc, f"CMD:UI_COMPOSE:Alice:{msg}")
+            assert "CMD:OK:ui_compose:Alice" in resp, f"Bob compose failed: {resp}"
+
+        # Next 6 via Reply on conversation screen
+        resp = send_cmd(bob_proc, "CMD:UI_OPEN_CHAT:Alice")
+        assert "CMD:OK:ui_open_chat:Alice" in resp, f"Open chat failed: {resp}"
+        for msg in bob_messages[6:]:
+            resp = send_cmd(bob_proc, f"CMD:UI_REPLY:{msg}")
+            assert "CMD:OK:ui_reply" in resp, f"Bob reply failed: {resp}"
+        print(f"  PASS: Bob sent {len(bob_messages)} messages (6 Compose + 6 Reply)")
+
+        # Capture from CA-Bob and deliver to Alice
+        time.sleep(1.0)
+        bob_out = ca_bob.poll(timeout=2.0)
+        msg_count = sum(1 for _, d in bob_out if d.decode().startswith("OSM:MSG:"))
+        assert msg_count >= 12, f"Expected 12 msgs from Bob CA, got {msg_count}"
+        for _, data in bob_out:
+            msg_str = data.decode()
+            if msg_str.startswith("OSM:MSG:"):
+                ca_alice.send_message(CHAR_UUID_RX, data)
+                time.sleep(0.1)
+        time.sleep(1.0)
+
+        # Verify Alice received them
+        resp = send_cmd(alice_proc, "CMD:RECV_COUNT:Bob")
+        assert "CMD:OK:recv_count:Bob:" in resp, f"Recv count failed: {resp}"
+        alice_recv = int(resp.split(":")[-1])
+        assert alice_recv == 12, f"Alice should have 12 msgs from Bob, got {alice_recv}"
+        print(f"  PASS: Alice received all {alice_recv} messages from Bob")
+
+        # === STEP 9: Verify message content via stderr logs ===
+        ca_alice.disconnect()
+        ca_bob.disconnect()
+        ca_alice = None
+        ca_bob = None
+
+        alice_proc.terminate()
+        alice_proc.wait(timeout=3)
+        stderr_alice = alice_proc.stderr.read().decode()
+        alice_proc = None
+
+        bob_proc.terminate()
+        bob_proc.wait(timeout=3)
+        stderr_bob = bob_proc.stderr.read().decode()
+        bob_proc = None
+
+        # Verify Alice decrypted Bob's messages
+        for msg in bob_messages:
+            assert msg in stderr_alice, f"Alice missing: {msg}\nLogs: {stderr_alice[-500:]}"
+        alice_dec = stderr_alice.count("Decrypted from")
+        print(f"  PASS: Alice decrypted {alice_dec} messages (expected {len(bob_messages)})")
+        assert alice_dec == len(bob_messages), f"Expected {len(bob_messages)}, got {alice_dec}"
+
+        # Verify Bob decrypted Alice's messages
+        for msg in alice_messages:
+            assert msg in stderr_bob, f"Bob missing: {msg}\nLogs: {stderr_bob[-500:]}"
+        bob_dec = stderr_bob.count("Decrypted from")
+        print(f"  PASS: Bob decrypted {bob_dec} messages (expected {len(alice_messages)})")
+        assert bob_dec == len(alice_messages), f"Expected {len(alice_messages)}, got {bob_dec}"
+
+        print("  PASS: UI-driven KEX + 24 messages (12 each direction) verified")
+
+    finally:
+        if ca_alice:
+            ca_alice.disconnect()
+        if ca_bob:
+            ca_bob.disconnect()
+        for proc in [alice_proc, bob_proc]:
+            if proc and proc.poll() is None:
+                proc.terminate()
+                proc.wait(timeout=3)
+        shutil.rmtree(alice_dir, ignore_errors=True)
+        shutil.rmtree(bob_dir, ignore_errors=True)
+
+
+def test_offline_queue_delivery():
+    """Test 19: Messages queued while CA disconnected are delivered on reconnect."""
+    print("\n[Test 19] Offline queue + reconnect delivery")
+
+    import tempfile
+    import shutil
+
+    alice_dir = tempfile.mkdtemp(prefix="osm_offline_")
+
+    def start_osm_in_dir(workdir, port):
+        env = os.environ.copy()
+        env["SDL_VIDEODRIVER"] = "dummy"
+        proc = subprocess.Popen(
+            [os.path.abspath(BINARY), "--port", str(port)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            cwd=workdir,
+        )
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.5)
+                s.connect(("127.0.0.1", port))
+                s.close()
+                return proc
+            except (ConnectionRefusedError, OSError):
+                time.sleep(0.1)
+        return None
+
+    def send_cmd(proc, cmd, timeout=5.0):
+        import select
+        proc.stdin.write(f"{cmd}\n".encode())
+        proc.stdin.flush()
+        buf = b""
+        fd = proc.stdout.fileno()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.2)
+            if ready:
+                chunk = os.read(fd, 4096)
+                if not chunk:
+                    break
+                buf += chunk
+                text = buf.decode(errors="replace")
+                for line in text.split("\n"):
+                    line = line.strip()
+                    if line.startswith(("CMD:OK:", "CMD:ERR:", "CMD:IDENTITY:")):
+                        deadline = 0
+                        break
+            if proc.poll() is not None:
+                break
+        result = []
+        for line in buf.decode(errors="replace").split("\n"):
+            line = line.strip()
+            if line.startswith("CMD:"):
+                result.append(line)
+        return "\n".join(result)
+
+    proc = None
+    try:
+        proc = start_osm_in_dir(alice_dir, PORT_A)
+        assert proc, "OSM failed to start"
+
+        # Generate keypair and create an established contact
+        resp = send_cmd(proc, "CMD:KEYGEN")
+        assert "CMD:OK:keygen" in resp
+        resp = send_cmd(proc, "CMD:ADD:TestPeer")
+        assert "CMD:OK:add:TestPeer" in resp
+        resp = send_cmd(proc, "CMD:ASSIGN:TestPeer")
+        # No pending key yet — we need to fake one
+        # Actually, let's set up properly: add key exchange via transport
+        ca = TcpClient(PORT_A, "CA")
+        assert ca.connect(), "CA failed to connect"
+        time.sleep(0.3)
+
+        # Drain any KEX message from ADD
+        ca.poll(timeout=1.0)
+
+        # Send a fake peer pubkey to establish the contact
+        import nacl.bindings
+        peer_sk = nacl.bindings.randombytes(32)
+        peer_pk = nacl.bindings.crypto_scalarmult_base(peer_sk)
+        peer_pk_b64 = base64.b64encode(peer_pk).decode()
+
+        ca.send_message(CHAR_UUID_RX, f"OSM:KEY:{peer_pk_b64}".encode())
+        time.sleep(0.5)
+        resp = send_cmd(proc, "CMD:ASSIGN:TestPeer")
+        assert "ESTABLISHED" in resp, f"Assign failed: {resp}"
+
+        # Disconnect CA
+        ca.disconnect()
+        time.sleep(0.3)
+
+        # Send 5 messages while CA is disconnected (via UI)
+        for i in range(5):
+            resp = send_cmd(proc, f"CMD:UI_COMPOSE:TestPeer:Offline msg {i+1}")
+            assert "CMD:OK:ui_compose" in resp, f"Compose while offline failed: {resp}"
+        print("  PASS: 5 messages queued while CA disconnected")
+
+        # Reconnect CA
+        ca2 = TcpClient(PORT_A, "CA-reconnect")
+        assert ca2.connect(), "CA reconnect failed"
+        # Wait for outbox flush on next poll cycle
+        time.sleep(2.0)
+
+        msgs = ca2.poll(timeout=3.0)
+        msg_count = sum(1 for _, d in msgs if d.decode().startswith("OSM:MSG:"))
+        print(f"  Got {msg_count} messages after reconnect")
+        assert msg_count == 5, f"Expected 5 queued messages, got {msg_count}"
+        print("  PASS: All 5 queued messages delivered on reconnect")
+
+        ca2.disconnect()
+
+    finally:
+        if proc and proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=3)
+        shutil.rmtree(alice_dir, ignore_errors=True)
+
+
 def main():
     if not os.path.isfile(BINARY):
         print(f"ERROR: OSM binary not found at {BINARY}")
@@ -1289,6 +1703,8 @@ def main():
         test_full_kex_and_multi_message,
         test_full_kex_flow_via_stdin,
         test_full_kex_and_messaging_isolated,
+        test_ui_driven_kex_and_messaging,
+        test_offline_queue_delivery,
     ]
 
     passed = 0

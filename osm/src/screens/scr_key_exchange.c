@@ -191,3 +191,5 @@ void scr_key_exchange_refresh(void)
         break;
     }
 }
+
+lv_obj_t *scr_key_exchange_get_action_btn(void) { return action_btn; }

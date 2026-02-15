@@ -23,6 +23,7 @@ static lv_obj_t *contact_list;
 static lv_obj_t *new_contact_cont;
 static lv_obj_t *name_ta;
 static lv_obj_t *badge_lbl;
+static lv_obj_t *new_contact_ok_btn;   /* "Create" in new contact dialog */
 
 /* Index into g_app.pending_keys currently being assigned */
 static uint32_t current_pending_idx;
@@ -220,12 +221,12 @@ void scr_assign_key_create(void)
     lv_textarea_set_placeholder_text(name_ta, "Enter name...");
     if (g_app.dev_group) lv_group_add_obj(g_app.dev_group, name_ta);
 
-    lv_obj_t *ok_btn = lv_button_create(new_contact_cont);
-    lv_obj_set_size(ok_btn, 80, 26);
-    lv_obj_align(ok_btn, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
-    lv_obj_set_style_bg_color(ok_btn, lv_color_hex(0x00C853), 0);
-    lv_obj_add_event_cb(ok_btn, confirm_new_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *ok_lbl = lv_label_create(ok_btn);
+    new_contact_ok_btn = lv_button_create(new_contact_cont);
+    lv_obj_set_size(new_contact_ok_btn, 80, 26);
+    lv_obj_align(new_contact_ok_btn, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_set_style_bg_color(new_contact_ok_btn, lv_color_hex(0x00C853), 0);
+    lv_obj_add_event_cb(new_contact_ok_btn, confirm_new_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *ok_lbl = lv_label_create(new_contact_ok_btn);
     lv_label_set_text(ok_lbl, "Create");
     lv_obj_set_style_text_color(ok_lbl, lv_color_white(), 0);
     lv_obj_center(ok_lbl);
@@ -319,4 +320,17 @@ void scr_assign_key_refresh(void)
     lv_label_set_text(later_lbl, "Later");
     lv_obj_set_style_text_color(later_lbl, lv_color_hex(0xBBBBBB), 0);
     lv_obj_center(later_lbl);
+}
+
+lv_obj_t *scr_assign_key_get_contact_list(void) { return contact_list; }
+lv_obj_t *scr_assign_key_get_name_ta(void) { return name_ta; }
+lv_obj_t *scr_assign_key_get_name_ok_btn(void) { return new_contact_ok_btn; }
+
+/* Find the "Create New Contact" button in the contact_list.
+   It's the second-to-last child (last is "Later"). */
+lv_obj_t *scr_assign_key_get_new_contact_btn(void)
+{
+    uint32_t cnt = lv_obj_get_child_count(contact_list);
+    if (cnt >= 2) return lv_obj_get_child(contact_list, cnt - 2);
+    return NULL;
 }

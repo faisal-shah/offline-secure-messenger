@@ -166,6 +166,10 @@ void scr_compose_create(void)
     lv_label_set_long_mode(status_lbl, LV_LABEL_LONG_WRAP);
 }
 
+lv_obj_t *scr_compose_get_msg_ta(void) { return msg_ta; }
+lv_obj_t *scr_compose_get_dropdown(void) { return contact_dd; }
+lv_obj_t *scr_compose_get_send_btn(void) { return send_btn; }
+
 void scr_compose_refresh(void)
 {
     /* Populate dropdown with established contacts only */

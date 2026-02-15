@@ -595,6 +595,260 @@ static void process_stdin_command(char *cmd)
         }
         fflush(stdout);
     }
+    /* CMD:SEND:<name>:<plaintext> — encrypt and send a message to contact */
+    else if (strncmp(cmd, "CMD:SEND:", 9) == 0) {
+        const char *rest = cmd + 9;
+        const char *colon = strchr(rest, ':');
+        if (!colon) { printf("CMD:ERR:send_syntax\n"); fflush(stdout); return; }
+        char name[64];
+        size_t nlen = colon - rest;
+        if (nlen >= sizeof(name)) nlen = sizeof(name) - 1;
+        memcpy(name, rest, nlen);
+        name[nlen] = '\0';
+        const char *plaintext = colon + 1;
+
+        contact_t *c = NULL;
+        for (uint32_t i = 0; i < g_app.contact_count; i++) {
+            if (strcmp(g_app.contacts[i].name, name) == 0) {
+                c = &g_app.contacts[i]; break;
+            }
+        }
+        if (!c) { printf("CMD:ERR:contact_not_found:%s\n", name); fflush(stdout); return; }
+        if (c->status != CONTACT_ESTABLISHED) {
+            printf("CMD:ERR:not_established:%s\n", name); fflush(stdout); return;
+        }
+
+        message_t *msg = messages_add(c->id, MSG_SENT, plaintext);
+        if (!msg) { printf("CMD:ERR:send_msg_add_failed\n"); fflush(stdout); return; }
+        app_send_encrypted_msg(msg->ciphertext);
+        messages_save();
+        printf("CMD:OK:send:%s:%u\n", name, msg->id);
+        fflush(stdout);
+        char ctx[128];
+        snprintf(ctx, sizeof(ctx), "CMD:SEND -> %s", name);
+        app_log(ctx, plaintext);
+    }
+    /* CMD:RECV_COUNT:<name> — count received messages for a contact */
+    else if (strncmp(cmd, "CMD:RECV_COUNT:", 15) == 0) {
+        const char *name = cmd + 15;
+        contact_t *c = NULL;
+        for (uint32_t i = 0; i < g_app.contact_count; i++) {
+            if (strcmp(g_app.contacts[i].name, name) == 0) {
+                c = &g_app.contacts[i]; break;
+            }
+        }
+        if (!c) { printf("CMD:ERR:contact_not_found:%s\n", name); fflush(stdout); return; }
+        uint32_t recv_count = 0;
+        for (uint32_t i = 0; i < g_app.message_count; i++) {
+            if (g_app.messages[i].contact_id == c->id &&
+                g_app.messages[i].direction == MSG_RECEIVED)
+                recv_count++;
+        }
+        printf("CMD:OK:recv_count:%s:%u\n", name, recv_count);
+        fflush(stdout);
+    }
+    /*================================================================
+     * UI-DRIVEN commands: these click actual LVGL widgets,
+     * exercising the same callbacks as real user interaction.
+     *================================================================*/
+    /* CMD:UI_ADD_CONTACT:<name> — Contacts screen → "+" → type name → "Create" */
+    else if (strncmp(cmd, "CMD:UI_ADD_CONTACT:", 19) == 0) {
+        const char *name = cmd + 19;
+        app_navigate_to(SCR_CONTACTS);
+        scr_contacts_refresh();
+        lv_timer_handler();
+
+        /* Click the "+" add button → shows name input overlay */
+        lv_obj_send_event(scr_contacts_get_add_btn(), LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+
+        /* Type the contact name */
+        lv_textarea_set_text(scr_contacts_get_name_ta(), name);
+        lv_timer_handler();
+
+        /* Click "Create" → add_contact_confirm_cb fires */
+        lv_obj_send_event(scr_contacts_get_name_ok_btn(), LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+
+        /* Verify contact was created */
+        contact_t *c = contacts_find_by_name(name);
+        if (c && c->status == CONTACT_PENDING_SENT) {
+            printf("CMD:OK:ui_add_contact:%s:%u\n", c->name, c->id);
+        } else {
+            printf("CMD:ERR:ui_add_contact_failed:%s\n", name);
+        }
+        fflush(stdout);
+    }
+    /* CMD:UI_COMPOSE:<name>:<text> — Compose screen → select contact → type → send */
+    else if (strncmp(cmd, "CMD:UI_COMPOSE:", 15) == 0) {
+        const char *rest = cmd + 15;
+        const char *colon = strchr(rest, ':');
+        if (!colon) { printf("CMD:ERR:ui_compose_syntax\n"); fflush(stdout); return; }
+        char name[64];
+        size_t nlen = colon - rest;
+        if (nlen >= sizeof(name)) nlen = sizeof(name) - 1;
+        memcpy(name, rest, nlen);
+        name[nlen] = '\0';
+        const char *text = colon + 1;
+
+        app_navigate_to(SCR_COMPOSE);
+        scr_compose_refresh();
+        lv_timer_handler();
+
+        /* Find contact index in dropdown */
+        lv_obj_t *dd = scr_compose_get_dropdown();
+        char dd_opts[1024];
+        lv_dropdown_get_selected_str(dd, dd_opts, sizeof(dd_opts));
+        /* Search options by iterating */
+        uint32_t dd_idx = 0;
+        bool found = false;
+        uint32_t total = lv_dropdown_get_option_count(dd);
+        for (uint32_t i = 0; i < total; i++) {
+            char buf[64];
+            lv_dropdown_set_selected(dd, i);
+            lv_dropdown_get_selected_str(dd, buf, sizeof(buf));
+            if (strcmp(buf, name) == 0) {
+                dd_idx = i;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            printf("CMD:ERR:ui_compose_contact_not_in_dropdown:%s\n", name);
+            fflush(stdout);
+            return;
+        }
+        lv_dropdown_set_selected(dd, dd_idx);
+
+        /* Type the message */
+        lv_textarea_set_text(scr_compose_get_msg_ta(), text);
+        lv_timer_handler();
+
+        /* Click send → send_cb fires → encrypts + outbox_enqueue + flush */
+        lv_obj_send_event(scr_compose_get_send_btn(), LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+
+        printf("CMD:OK:ui_compose:%s\n", name);
+        fflush(stdout);
+    }
+    /* CMD:UI_REPLY:<text> — On conversation screen → type reply → send */
+    else if (strncmp(cmd, "CMD:UI_REPLY:", 13) == 0) {
+        const char *text = cmd + 13;
+        if (g_app.current_screen != SCR_CONVERSATION) {
+            printf("CMD:ERR:ui_reply_not_on_conversation\n");
+            fflush(stdout);
+            return;
+        }
+
+        /* Type the reply */
+        lv_textarea_set_text(scr_conversation_get_reply_ta(), text);
+        lv_timer_handler();
+
+        /* Click send → send_reply_cb fires */
+        lv_obj_send_event(scr_conversation_get_send_btn(), LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+
+        printf("CMD:OK:ui_reply\n");
+        fflush(stdout);
+    }
+    /* CMD:UI_OPEN_CHAT:<name> — Navigate to conversation with named contact */
+    else if (strncmp(cmd, "CMD:UI_OPEN_CHAT:", 17) == 0) {
+        const char *name = cmd + 17;
+        contact_t *c = contacts_find_by_name(name);
+        if (!c) { printf("CMD:ERR:contact_not_found:%s\n", name); fflush(stdout); return; }
+        g_app.selected_contact_id = c->id;
+        app_navigate_to(SCR_CONVERSATION);
+        scr_conversation_refresh();
+        lv_timer_handler();
+        printf("CMD:OK:ui_open_chat:%s\n", name);
+        fflush(stdout);
+    }
+    /* CMD:UI_ASSIGN_PENDING:<name> — Assign key screen → click existing contact button */
+    else if (strncmp(cmd, "CMD:UI_ASSIGN_PENDING:", 22) == 0) {
+        const char *name = cmd + 22;
+        app_navigate_to(SCR_ASSIGN_KEY);
+        scr_assign_key_refresh();
+        lv_timer_handler();
+
+        /* Find the button for this contact in the contact_list */
+        lv_obj_t *clist = scr_assign_key_get_contact_list();
+        uint32_t cnt = lv_obj_get_child_count(clist);
+        bool clicked = false;
+        for (uint32_t i = 0; i < cnt; i++) {
+            lv_obj_t *child = lv_obj_get_child(clist, i);
+            /* Each assign button has: icon(child0), label(child1) with "Name (awaiting reply)" */
+            if (lv_obj_get_child_count(child) >= 2) {
+                lv_obj_t *lbl = lv_obj_get_child(child, 1);
+                const char *ltxt = lv_label_get_text(lbl);
+                if (ltxt && strstr(ltxt, name)) {
+                    lv_obj_send_event(child, LV_EVENT_CLICKED, NULL);
+                    lv_timer_handler();
+                    clicked = true;
+                    break;
+                }
+            }
+        }
+        if (clicked) {
+            printf("CMD:OK:ui_assign_pending:%s\n", name);
+        } else {
+            printf("CMD:ERR:ui_assign_pending_not_found:%s\n", name);
+        }
+        fflush(stdout);
+    }
+    /* CMD:UI_NEW_FROM_PENDING:<name> — Assign key screen → "Create New" → type name → Create */
+    else if (strncmp(cmd, "CMD:UI_NEW_FROM_PENDING:", 24) == 0) {
+        const char *name = cmd + 24;
+        app_navigate_to(SCR_ASSIGN_KEY);
+        scr_assign_key_refresh();
+        lv_timer_handler();
+
+        /* Click "Create New Contact" button */
+        lv_obj_t *new_btn = scr_assign_key_get_new_contact_btn();
+        if (!new_btn) {
+            printf("CMD:ERR:ui_new_from_pending_no_btn\n");
+            fflush(stdout);
+            return;
+        }
+        lv_obj_send_event(new_btn, LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+
+        /* Type name in dialog */
+        lv_textarea_set_text(scr_assign_key_get_name_ta(), name);
+        lv_timer_handler();
+
+        /* Click Create → confirm_new_cb fires → navigates to key exchange */
+        lv_obj_send_event(scr_assign_key_get_name_ok_btn(), LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+
+        contact_t *c = contacts_find_by_name(name);
+        if (c && c->status == CONTACT_PENDING_RECEIVED) {
+            printf("CMD:OK:ui_new_from_pending:%s:%u\n", c->name, c->id);
+        } else {
+            printf("CMD:ERR:ui_new_from_pending_failed:%s\n", name);
+        }
+        fflush(stdout);
+    }
+    /* CMD:UI_COMPLETE_KEX:<name> — Key exchange screen → click action button */
+    else if (strncmp(cmd, "CMD:UI_COMPLETE_KEX:", 20) == 0) {
+        const char *name = cmd + 20;
+        contact_t *c = contacts_find_by_name(name);
+        if (!c) { printf("CMD:ERR:contact_not_found:%s\n", name); fflush(stdout); return; }
+        g_app.selected_contact_id = c->id;
+        app_navigate_to(SCR_KEY_EXCHANGE);
+        scr_key_exchange_refresh();
+        lv_timer_handler();
+
+        /* Click action button → action_cb fires */
+        lv_obj_send_event(scr_key_exchange_get_action_btn(), LV_EVENT_CLICKED, NULL);
+        lv_timer_handler();
+
+        if (c->status == CONTACT_ESTABLISHED) {
+            printf("CMD:OK:ui_complete_kex:%s:ESTABLISHED\n", c->name);
+        } else {
+            printf("CMD:OK:ui_complete_kex:%s:%d\n", c->name, c->status);
+        }
+        fflush(stdout);
+    }
     else {
         printf("CMD:ERR:unknown_command\n");
         fflush(stdout);

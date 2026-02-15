@@ -13,6 +13,7 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 OSM_BIN="$REPO_DIR/osm/build/secure_communicator"
 CA_DIR="$REPO_DIR/companion-app"
 PIDFILE="/tmp/osm-test-session.pids"
+LOGDIR="/tmp/osm-test-logs"
 
 # Ports for the two OSM instances
 PORT_ALICE=19200
@@ -80,6 +81,9 @@ rm -f "$REPO_DIR/osm/build/alice/data_contacts.json" \
       "$REPO_DIR/osm/build/bob/data_identity.json" \
       "$REPO_DIR/osm/build/bob/data_pending_keys.json"
 
+# Create log directory
+mkdir -p "$LOGDIR"
+
 echo "============================================================"
 echo "  Offline Secure Messenger — Test Session"
 echo "============================================================"
@@ -93,14 +97,14 @@ echo ""
 cd "$REPO_DIR/osm/build"
 mkdir -p alice bob
 cd alice
-"$OSM_BIN" --port $PORT_ALICE --name Alice 2>osm_alice.log &
+"$OSM_BIN" --port $PORT_ALICE --name Alice 2>"$LOGDIR/osm_alice.log" &
 PID=$!
 echo "$PID OSM-Alice" >> "$PIDFILE"
 echo "  Started OSM-Alice (PID $PID)"
 
 # Launch OSM-Bob
 cd "$REPO_DIR/osm/build/bob"
-"$OSM_BIN" --port $PORT_BOB --name Bob 2>osm_bob.log &
+"$OSM_BIN" --port $PORT_BOB --name Bob 2>"$LOGDIR/osm_bob.log" &
 PID=$!
 echo "$PID OSM-Bob" >> "$PIDFILE"
 echo "  Started OSM-Bob   (PID $PID)"
@@ -146,12 +150,12 @@ if [ -n "$GRADLE" ] && [ -x "$GRADLE" ]; then
     if [ $? -eq 0 ]; then
         DIST_BIN="$CA_DIR/desktopApp/build/compose/binaries/main/app/companion-app/bin/companion-app"
         if [ -x "$DIST_BIN" ]; then
-            "$DIST_BIN" --port $PORT_ALICE --title Alice > /tmp/ca_alice.log 2>&1 &
+            "$DIST_BIN" --port $PORT_ALICE --title Alice > "$LOGDIR/ca_alice.log" 2>&1 &
             PID=$!
             echo "$PID CA-Alice" >> "$PIDFILE"
             echo "  Started CA-Alice (PID $PID) — port $PORT_ALICE"
 
-            "$DIST_BIN" --port $PORT_BOB --title Bob > /tmp/ca_bob.log 2>&1 &
+            "$DIST_BIN" --port $PORT_BOB --title Bob > "$LOGDIR/ca_bob.log" 2>&1 &
             PID=$!
             echo "$PID CA-Bob" >> "$PIDFILE"
             echo "  Started CA-Bob   (PID $PID) — port $PORT_BOB"

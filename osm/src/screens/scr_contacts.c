@@ -14,6 +14,8 @@
 static lv_obj_t *list_cont;
 static lv_obj_t *name_input_cont;
 static lv_obj_t *name_ta;
+static lv_obj_t *add_btn_hdr;       /* "+" button in header */
+static lv_obj_t *ok_btn_dialog;     /* "Create" button in name dialog */
 static lv_obj_t *confirm_del_cont;     /* delete-contact confirmation dialog */
 static uint32_t  pending_delete_id;    /* contact id awaiting confirmation */
 
@@ -143,12 +145,12 @@ void scr_contacts_create(void)
     lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
     lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
 
-    lv_obj_t *add_btn = lv_button_create(header);
-    lv_obj_set_size(add_btn, 40, 22);
-    lv_obj_align(add_btn, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_set_style_bg_color(add_btn, lv_color_hex(0x00C853), 0);
-    lv_obj_add_event_cb(add_btn, add_contact_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *add_lbl = lv_label_create(add_btn);
+    add_btn_hdr = lv_button_create(header);
+    lv_obj_set_size(add_btn_hdr, 40, 22);
+    lv_obj_align(add_btn_hdr, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_set_style_bg_color(add_btn_hdr, lv_color_hex(0x00C853), 0);
+    lv_obj_add_event_cb(add_btn_hdr, add_contact_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *add_lbl = lv_label_create(add_btn_hdr);
     lv_label_set_text(add_lbl, LV_SYMBOL_PLUS);
     lv_obj_set_style_text_color(add_lbl, lv_color_white(), 0);
     lv_obj_center(add_lbl);
@@ -188,12 +190,12 @@ void scr_contacts_create(void)
     lv_textarea_set_placeholder_text(name_ta, "Enter name...");
     if (g_app.dev_group) lv_group_add_obj(g_app.dev_group, name_ta);
 
-    lv_obj_t *ok_btn = lv_button_create(name_input_cont);
-    lv_obj_set_size(ok_btn, 80, 26);
-    lv_obj_align(ok_btn, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
-    lv_obj_set_style_bg_color(ok_btn, lv_color_hex(0x00C853), 0);
-    lv_obj_add_event_cb(ok_btn, add_contact_confirm_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *ok_lbl = lv_label_create(ok_btn);
+    ok_btn_dialog = lv_button_create(name_input_cont);
+    lv_obj_set_size(ok_btn_dialog, 80, 26);
+    lv_obj_align(ok_btn_dialog, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_set_style_bg_color(ok_btn_dialog, lv_color_hex(0x00C853), 0);
+    lv_obj_add_event_cb(ok_btn_dialog, add_contact_confirm_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *ok_lbl = lv_label_create(ok_btn_dialog);
     lv_label_set_text(ok_lbl, "Create");
     lv_obj_set_style_text_color(ok_lbl, lv_color_white(), 0);
     lv_obj_center(ok_lbl);
@@ -333,3 +335,7 @@ void scr_contacts_refresh(void)
         lv_obj_center(del_ico);
     }
 }
+
+lv_obj_t *scr_contacts_get_add_btn(void) { return add_btn_hdr; }
+lv_obj_t *scr_contacts_get_name_ta(void) { return name_ta; }
+lv_obj_t *scr_contacts_get_name_ok_btn(void) { return ok_btn_dialog; }
