@@ -79,7 +79,7 @@ void scr_setup_create(void)
     /* Generate button */
     generate_btn = lv_button_create(scr);
     lv_obj_set_size(generate_btn, 200, 40);
-    lv_obj_align(generate_btn, LV_ALIGN_CENTER, 0, 10);
+    lv_obj_set_pos(generate_btn, (DEVICE_HOR_RES - 200) / 2, 155);
     lv_obj_set_style_bg_color(generate_btn, lv_color_hex(0x0F3460), 0);
     lv_obj_add_event_cb(generate_btn, generate_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *gen_lbl = lv_label_create(generate_btn);
@@ -94,7 +94,7 @@ void scr_setup_create(void)
     lv_label_set_long_mode(pubkey_lbl, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_color(pubkey_lbl, lv_color_hex(0x00E676), 0);
     lv_obj_set_style_text_font(pubkey_lbl, &lv_font_montserrat_10, 0);
-    lv_obj_align(pubkey_lbl, LV_ALIGN_CENTER, 0, 50);
+    lv_obj_set_pos(pubkey_lbl, 16, 155);
     lv_obj_add_flag(pubkey_lbl, LV_OBJ_FLAG_HIDDEN);
 
     /* Continue button (hidden until keypair generated) */

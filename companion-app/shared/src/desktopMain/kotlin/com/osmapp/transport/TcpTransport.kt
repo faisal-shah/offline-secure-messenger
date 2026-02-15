@@ -43,18 +43,22 @@ class TcpTransport : Transport {
             while (isActive) {
                 for (port in PORT_START..PORT_END) {
                     try {
-                        val socket = Socket()
-                        socket.connect(InetSocketAddress("127.0.0.1", port), CONNECT_TIMEOUT_MS)
-                        socket.close()
                         val id = "osm-$port"
-                        val device = OsmDevice(
-                            id = id,
-                            name = "OSM :$port",
-                            port = port,
-                            state = if (connections.containsKey(id)) ConnectionState.CONNECTED
-                                    else ConnectionState.DISCONNECTED
-                        )
-                        discoveryListener?.invoke(device)
+                        // Skip probe if already connected
+                        if (connections.containsKey(id)) {
+                            discoveryListener?.invoke(OsmDevice(
+                                id = id, name = "OSM :$port", port = port,
+                                state = ConnectionState.CONNECTED
+                            ))
+                        } else {
+                            val socket = Socket()
+                            socket.connect(InetSocketAddress("127.0.0.1", port), CONNECT_TIMEOUT_MS)
+                            socket.close()
+                            discoveryListener?.invoke(OsmDevice(
+                                id = id, name = "OSM :$port", port = port,
+                                state = ConnectionState.DISCONNECTED
+                            ))
+                        }
                     } catch (_: IOException) {
                         // Port not listening
                     }

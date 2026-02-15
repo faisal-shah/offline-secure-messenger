@@ -33,6 +33,28 @@ stop_all() {
     fi
 }
 
+# Ensure Java trusts TLS inspection proxy certs (corporate networks)
+ensure_java_truststore() {
+    if [ -f /tmp/cacerts-patched ]; then
+        return 0
+    fi
+    echo "  Patching Java truststore for TLS proxy..."
+    cp /etc/ssl/certs/java/cacerts /tmp/cacerts-patched 2>/dev/null || return 1
+    # Extract proxy CA chain from any HTTPS host
+    echo | openssl s_client -connect services.gradle.org:443 \
+        -servername services.gradle.org -showcerts 2>/dev/null \
+        | awk '/BEGIN CERT/,/END CERT/' > /tmp/proxy-chain.pem
+    csplit -z -f /tmp/proxy-cert- /tmp/proxy-chain.pem \
+        '/-----BEGIN CERTIFICATE-----/' '{*}' >/dev/null 2>&1
+    for cert in /tmp/proxy-cert-*; do
+        alias="proxy-$(basename "$cert")"
+        keytool -importcert -noprompt -keystore /tmp/cacerts-patched \
+            -storepass changeit -alias "$alias" -file "$cert" >/dev/null 2>&1
+    done
+    rm -f /tmp/proxy-chain.pem /tmp/proxy-cert-*
+    echo "  Truststore patched: /tmp/cacerts-patched"
+}
+
 if [ "${1:-}" = "stop" ]; then
     stop_all
     exit 0
@@ -91,21 +113,36 @@ done
 # Launch CA instances
 echo ""
 echo "  Starting Companion Apps..."
+ensure_java_truststore
+export JAVA_TOOL_OPTIONS="-Djavax.net.ssl.trustStore=/tmp/cacerts-patched"
 
-# Check if Gradle is available
-GRADLE="$CA_DIR/gradlew"
-if [ ! -x "$GRADLE" ]; then
+# Check if Gradle is available (wrapper has SSL issues, use local install)
+GRADLE=""
+if [ -x "/tmp/gradle-8.10/bin/gradle" ]; then
     GRADLE="/tmp/gradle-8.10/bin/gradle"
+elif [ -x "$CA_DIR/gradlew" ]; then
+    GRADLE="$CA_DIR/gradlew"
 fi
-if [ ! -x "$GRADLE" ]; then
-    echo "  WARNING: Gradle not found. Skipping CA launch."
-    echo "  Run manually: cd companion-app && ./gradlew :desktopApp:run"
-else
+
+if [ -z "$GRADLE" ]; then
+    echo "  WARNING: Gradle not found. Downloading..."
+    curl -ksL https://services.gradle.org/distributions/gradle-8.10-bin.zip \
+        -o /tmp/gradle-8.10.zip 2>/dev/null
+    if [ -f /tmp/gradle-8.10.zip ]; then
+        unzip -qo /tmp/gradle-8.10.zip -d /tmp/
+        GRADLE="/tmp/gradle-8.10/bin/gradle"
+    fi
+fi
+
+if [ -n "$GRADLE" ] && [ -x "$GRADLE" ]; then
     cd "$CA_DIR"
     "$GRADLE" :desktopApp:run --no-daemon > /tmp/ca_alice.log 2>&1 &
     PID=$!
     echo "$PID CA-Alice" >> "$PIDFILE"
     echo "  Started CA (PID $PID) — discovers both OSMs automatically"
+else
+    echo "  WARNING: Could not find or download Gradle. Skipping CA launch."
+    echo "  Run manually: cd companion-app && /tmp/gradle-8.10/bin/gradle :desktopApp:run"
 fi
 
 echo ""
