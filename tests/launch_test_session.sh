@@ -71,15 +71,9 @@ if [ ! -f "$OSM_BIN" ]; then
     exit 1
 fi
 
-# Clean up stale data files so each session starts fresh
-rm -f "$REPO_DIR/osm/build/alice/data_contacts.json" \
-      "$REPO_DIR/osm/build/alice/data_messages.json" \
-      "$REPO_DIR/osm/build/alice/data_identity.json" \
-      "$REPO_DIR/osm/build/alice/data_pending_keys.json" \
-      "$REPO_DIR/osm/build/bob/data_contacts.json" \
-      "$REPO_DIR/osm/build/bob/data_messages.json" \
-      "$REPO_DIR/osm/build/bob/data_identity.json" \
-      "$REPO_DIR/osm/build/bob/data_pending_keys.json"
+# Clean up stale data so each session starts fresh
+rm -f "$REPO_DIR/osm/build/alice/osm_data.img" \
+      "$REPO_DIR/osm/build/bob/osm_data.img"
 
 # Create log directory
 mkdir -p "$LOGDIR"

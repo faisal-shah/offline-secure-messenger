@@ -115,6 +115,22 @@ cd companion-app
 ./gradlew :desktopApp:run
 ```
 
+### Launch a Full Test Session (Alice + Bob)
+
+A convenience script launches two OSM instances and two Companion Apps for
+manual end-to-end testing:
+
+```bash
+# Launch (2 OSM windows + 2 CA windows)
+./tests/launch_test_session.sh
+
+# Stop all
+./tests/launch_test_session.sh stop
+```
+
+This creates OSM-Alice (port 19200) and OSM-Bob (port 19201) in separate
+working directories, then builds and launches matching Companion Apps.
+
 ## E2E Integration Tests
 
 The 43 end-to-end tests exercise the full OSM↔CA protocol over TCP: key
