@@ -12,6 +12,7 @@ desktop interaction.
 | **Home** | Dashboard with contact list, status icons, unread badges, CA indicator |
 | **Contacts** | Add/view/delete contacts, tap to start key exchange |
 | **Key Exchange** | 3-step Diffie-Hellman wizard (send → receive → establish) |
+| **Assign Key** | Assign incoming anonymous public keys to contacts |
 | **Compose** | Pick an established contact, type a message, encrypt and send |
 | **Inbox** | Conversation list sorted by most-recent message |
 | **Conversation** | Chat bubbles with inline reply, delete messages or thread |
@@ -57,14 +58,19 @@ All messages between OSM and CA use a text-based envelope:
 
 | Prefix | Format | Purpose |
 |---|---|---|
-| `OSM:KEY:` | `OSM:KEY:<sender_name>:<pubkey_b64>` | Key exchange (auto-creates contact on receiver) |
+| `OSM:KEY:` | `OSM:KEY:<pubkey_b64>` | Key exchange (anonymous — queued for user assignment) |
 | `OSM:MSG:` | `OSM:MSG:<ciphertext_b64>` | Encrypted message |
 
 **Key exchange flow:**
-1. Alice adds "Bob" → OSM sends `OSM:KEY:Alice:<alice_pubkey>` to CA
-2. Bob receives via his CA → OSM auto-creates contact "Alice" (PENDING_RECEIVED)
-3. Bob completes exchange → OSM sends `OSM:KEY:Bob:<bob_pubkey>`
-4. Alice receives → contact "Bob" transitions from PENDING_SENT to ESTABLISHED
+1. Alice adds "Bob" → OSM sends `OSM:KEY:<alice_pubkey>` to CA (no sender name)
+2. Bob receives via his CA → OSM queues pubkey in **pending keys** queue
+3. Bob opens "Assign Key" screen → assigns key to new contact "Alice" (PENDING_RECEIVED)
+4. Bob completes exchange → OSM sends `OSM:KEY:<bob_pubkey>`
+5. Alice receives → "Assign Key" → selects "Bob (Pending Sent)" → ESTABLISHED
+
+Incoming keys are stored in a pending queue (max 8). The home screen shows an
+orange badge when keys await assignment. Contact names are entirely local — the
+protocol carries no identity information.
 
 ## Building
 
@@ -98,8 +104,7 @@ cd osm/build
 ./secure_communicator --port 19200 --name Alice # named instance
 ```
 
-`--name` sets the device identity displayed in the header bar and used in
-the `OSM:KEY:<name>:<pubkey>` envelope during key exchange.
+`--name` sets the device identity displayed in the header bar.
 
 One SDL window opens at 640×480 (320×240 at 2× zoom). Use mouse and keyboard.
 Click textareas to focus before typing.
@@ -146,6 +151,7 @@ osm/
 │       ├── scr_home.h/c
 │       ├── scr_contacts.h/c
 │       ├── scr_key_exchange.h/c
+│       ├── scr_assign_key.h/c
 │       ├── scr_compose.h/c
 │       ├── scr_inbox.h/c
 │       └── scr_conversation.h/c

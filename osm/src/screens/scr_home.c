@@ -7,6 +7,7 @@
 #include "scr_compose.h"
 #include "scr_inbox.h"
 #include "scr_conversation.h"
+#include "scr_assign_key.h"
 #include "../app.h"
 #include "../data/contacts.h"
 #include "../data/messages.h"
@@ -16,10 +17,12 @@
 static lv_obj_t *contact_list;
 static lv_obj_t *empty_label;
 static lv_obj_t *ca_status_lbl;
+static lv_obj_t *pending_keys_banner;
 
 static void nav_contacts_cb(lv_event_t *e) { (void)e; app_navigate_to(SCR_CONTACTS); scr_contacts_refresh(); }
 static void nav_compose_cb(lv_event_t *e)  { (void)e; app_navigate_to(SCR_COMPOSE); scr_compose_refresh(); }
 static void nav_inbox_cb(lv_event_t *e)    { (void)e; app_navigate_to(SCR_INBOX); scr_inbox_refresh(); }
+static void nav_assign_key_cb(lv_event_t *e) { (void)e; app_navigate_to(SCR_ASSIGN_KEY); scr_assign_key_refresh(); }
 
 static void contact_clicked_cb(lv_event_t *e)
 {
@@ -71,6 +74,20 @@ void scr_home_create(void)
     lv_obj_set_style_text_color(ca_status_lbl, lv_color_hex(0xFF1744), 0);
     lv_obj_set_style_text_font(ca_status_lbl, &lv_font_montserrat_10, 0);
     lv_obj_align(ca_status_lbl, LV_ALIGN_RIGHT_MID, 0, 0);
+
+    /* Pending keys banner (hidden by default, shown when keys arrive) */
+    pending_keys_banner = lv_button_create(scr);
+    lv_obj_set_size(pending_keys_banner, DEVICE_HOR_RES - 8, 26);
+    lv_obj_set_pos(pending_keys_banner, 4, 30);
+    lv_obj_set_style_bg_color(pending_keys_banner, lv_color_hex(0xFF6D00), 0);
+    lv_obj_set_style_radius(pending_keys_banner, 4, 0);
+    lv_obj_add_event_cb(pending_keys_banner, nav_assign_key_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_flag(pending_keys_banner, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *banner_lbl = lv_label_create(pending_keys_banner);
+    lv_label_set_text(banner_lbl, LV_SYMBOL_DOWNLOAD " Incoming key — tap to assign");
+    lv_obj_set_style_text_color(banner_lbl, lv_color_white(), 0);
+    lv_obj_set_style_text_font(banner_lbl, &lv_font_montserrat_10, 0);
+    lv_obj_center(banner_lbl);
 
     /* Main area */
     contact_list = lv_obj_create(scr);
@@ -137,6 +154,26 @@ void scr_home_refresh(void)
     } else {
         lv_label_set_text(ca_status_lbl, LV_SYMBOL_CLOSE " CA");
         lv_obj_set_style_text_color(ca_status_lbl, lv_color_hex(0xFF1744), 0);
+    }
+
+    /* Pending keys banner */
+    if (g_app.pending_key_count > 0) {
+        lv_obj_clear_flag(pending_keys_banner, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_t *lbl = lv_obj_get_child(pending_keys_banner, 0);
+        if (g_app.pending_key_count == 1) {
+            lv_label_set_text(lbl, LV_SYMBOL_DOWNLOAD " 1 incoming key — tap to assign");
+        } else {
+            char buf[64];
+            snprintf(buf, sizeof(buf), LV_SYMBOL_DOWNLOAD " %u incoming keys — tap to assign",
+                     g_app.pending_key_count);
+            lv_label_set_text(lbl, buf);
+        }
+        lv_obj_set_pos(contact_list, 0, 58);
+        lv_obj_set_size(contact_list, DEVICE_HOR_RES, DEVICE_VER_RES - 58 - 32);
+    } else {
+        lv_obj_add_flag(pending_keys_banner, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_pos(contact_list, 0, 28);
+        lv_obj_set_size(contact_list, DEVICE_HOR_RES, DEVICE_VER_RES - 28 - 32);
     }
 
     /* Clear dynamic children (keep empty_label) */

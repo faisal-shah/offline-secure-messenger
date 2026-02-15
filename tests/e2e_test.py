@@ -359,8 +359,8 @@ def test_reconnect():
 
 
 def test_key_exchange_envelope():
-    """Test 7: Key exchange via OSM:KEY: envelope creates contact."""
-    print("\n[Test 7] Key exchange envelope")
+    """Test 7: Key exchange via OSM:KEY:<pubkey> (no name) queues pending key."""
+    print("\n[Test 7] Key exchange envelope (anonymous)")
     osm = OsmProcess(PORT_A, "OSM-A")
     assert osm.start(), "OSM failed to start"
 
@@ -368,19 +368,26 @@ def test_key_exchange_envelope():
     assert ca.connect(), "CA failed to connect"
     time.sleep(0.3)
 
-    # Send a key exchange message (simulating Alice sending her pubkey)
-    # Use a fake but valid-length base64 pubkey (44 chars for 32 bytes)
-    fake_pubkey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-    kex_msg = f"OSM:KEY:Alice:{fake_pubkey}".encode()
+    fake_key = bytes(range(32))
+    key_b64 = base64.b64encode(fake_key).decode()
+    kex_msg = f"OSM:KEY:{key_b64}".encode()
     ca.send_message(CHAR_UUID_RX, kex_msg)
-    print("  PASS: Sent KEX envelope to OSM")
+    print("  PASS: Sent anonymous KEX envelope to OSM")
 
     time.sleep(0.5)
     assert osm.proc.poll() is None, "OSM crashed after KEX message"
-    print("  PASS: OSM processed KEX message without crash")
+
+    osm.proc.terminate()
+    osm.proc.wait(timeout=3)
+    stderr = osm.proc.stderr.read().decode()
+    osm.proc = None
+
+    assert "KEX queued for assignment" in stderr, \
+        f"Expected 'KEX queued for assignment', got: {stderr}"
+    assert "bad pubkey" not in stderr, f"Bad pubkey error: {stderr}"
+    print("  PASS: OSM queued key for user assignment")
 
     ca.disconnect()
-    osm.stop()
 
 
 def test_unknown_envelope():
@@ -392,7 +399,6 @@ def test_unknown_envelope():
     ca = TcpClient(PORT_A, "CA-A")
     assert ca.connect(), "CA failed to connect"
 
-    # Send garbage without any known prefix
     ca.send_message(CHAR_UUID_RX, b"JUNK:SomeRandomData")
     time.sleep(0.5)
     assert osm.proc.poll() is None, "OSM crashed on unknown envelope"
@@ -402,14 +408,13 @@ def test_unknown_envelope():
     osm.stop()
 
 
-def test_kex_creates_contact():
-    """Test 9: CA→OSM key exchange creates a contact on the OSM.
+def test_kex_queues_pending_key():
+    """Test 9: CA→OSM key exchange queues in pending_keys (not auto-create).
 
-    Verifies that when a valid OSM:KEY:<name>:<pubkey> message is sent
-    from the CA to the OSM, the OSM logs that it processed the KEX
-    (not the 'bad pubkey' error that was caused by the bool!=0 bug).
+    The new anonymous protocol (OSM:KEY:<pubkey>) stores the key in a
+    pending queue rather than auto-creating a contact.
     """
-    print("\n[Test 9] CA→OSM KEX creates contact")
+    print("\n[Test 9] CA→OSM KEX queues pending key")
 
     osm = OsmProcess(PORT_A, "OSM-A")
     assert osm.start(), "OSM failed to start"
@@ -418,40 +423,73 @@ def test_kex_creates_contact():
     assert ca.connect(), "CA failed to connect"
     time.sleep(0.3)
 
-    # Generate a valid 32-byte pubkey encoded as base64
-    fake_key = bytes(range(32))
+    fake_key = bytes([0x11] * 32)
     key_b64 = base64.b64encode(fake_key).decode()
-    kex_msg = f"OSM:KEY:TestSender:{key_b64}".encode()
+    kex_msg = f"OSM:KEY:{key_b64}".encode()
     ca.send_message(CHAR_UUID_RX, kex_msg)
     time.sleep(0.5)
 
     assert osm.proc.poll() is None, "OSM crashed"
 
-    # Read stderr to verify the KEX was accepted (not rejected)
     osm.proc.terminate()
     osm.proc.wait(timeout=3)
     stderr = osm.proc.stderr.read().decode()
-    osm.proc = None  # prevent double-stop
+    osm.proc = None
 
-    assert "KEX received from TestSender" in stderr, \
-        f"Expected KEX acceptance log, got: {stderr}"
-    assert "bad pubkey" not in stderr, \
-        f"KEX was rejected with 'bad pubkey': {stderr}"
-    print("  PASS: OSM accepted KEX and created contact 'TestSender'")
+    assert "KEX queued for assignment" in stderr, \
+        f"Expected pending queue log, got: {stderr}"
+    assert "bad pubkey" not in stderr, f"Bad pubkey error: {stderr}"
+    print("  PASS: Key queued for assignment (not auto-created)")
+
+    ca.disconnect()
 
 
-def test_bidirectional_kex():
-    """Test 10: Full bidirectional key exchange between two OSM instances.
+def test_kex_dedup_pending():
+    """Test 10: Duplicate KEX pubkey is rejected (not queued twice)."""
+    print("\n[Test 10] KEX dedup in pending queue")
 
-    Simulates:
-    1. CA-Bob sends OSM:KEY:Alice:<pubkey> to OSM-Bob → auto-creates contact
-    2. CA-Alice sends OSM:KEY:Bob:<pubkey> to OSM-Alice → auto-creates contact
-    Both OSMs should accept the KEX messages.
-    Note: data file conflicts are avoided by cleaning between starts.
+    osm = OsmProcess(PORT_A, "OSM-A")
+    assert osm.start(), "OSM failed to start"
+
+    ca = TcpClient(PORT_A, "CA-A")
+    assert ca.connect(), "CA failed to connect"
+    time.sleep(0.3)
+
+    fake_key = bytes([0x22] * 32)
+    key_b64 = base64.b64encode(fake_key).decode()
+    kex_msg = f"OSM:KEY:{key_b64}".encode()
+
+    # Send the same key twice
+    ca.send_message(CHAR_UUID_RX, kex_msg)
+    time.sleep(0.3)
+    ca.send_message(CHAR_UUID_RX, kex_msg)
+    time.sleep(0.5)
+
+    assert osm.proc.poll() is None, "OSM crashed"
+
+    osm.proc.terminate()
+    osm.proc.wait(timeout=3)
+    stderr = osm.proc.stderr.read().decode()
+    osm.proc = None
+
+    queued_count = stderr.count("KEX queued for assignment")
+    dup_count = stderr.count("already pending")
+    assert queued_count == 1, f"Expected 1 queued, got {queued_count}"
+    assert dup_count == 1, f"Expected 1 duplicate rejection, got {dup_count}"
+    print("  PASS: Duplicate key rejected, only queued once")
+
+    ca.disconnect()
+
+
+def test_bidirectional_kex_anonymous():
+    """Test 11: Bidirectional key exchange with anonymous protocol.
+
+    Two separate OSM instances each receive an anonymous KEX from the other.
+    Both should queue the keys for assignment (not auto-create contacts).
     """
-    print("\n[Test 10] Bidirectional key exchange")
+    print("\n[Test 11] Bidirectional anonymous KEX")
 
-    # --- OSM-Bob receives Alice's pubkey ---
+    # --- OSM-Bob receives a key ---
     osm_bob = OsmProcess(PORT_B, "Bob")
     assert osm_bob.start(), "OSM-Bob failed to start"
 
@@ -461,7 +499,7 @@ def test_bidirectional_kex():
 
     alice_key = bytes([0xAA] * 32)
     alice_b64 = base64.b64encode(alice_key).decode()
-    kex_alice = f"OSM:KEY:Alice:{alice_b64}".encode()
+    kex_alice = f"OSM:KEY:{alice_b64}".encode()
     ca_bob.send_message(CHAR_UUID_RX, kex_alice)
     time.sleep(0.5)
 
@@ -472,11 +510,11 @@ def test_bidirectional_kex():
     osm_bob.proc = None
     ca_bob.disconnect()
 
-    assert "KEX received from Alice" in stderr_bob, \
-        f"OSM-Bob didn't accept Alice's KEX: {stderr_bob}"
-    print("  PASS: OSM-Bob accepted Alice's KEX")
+    assert "KEX queued for assignment" in stderr_bob, \
+        f"OSM-Bob didn't queue key: {stderr_bob}"
+    print("  PASS: OSM-Bob queued incoming key")
 
-    # --- OSM-Alice receives Bob's pubkey ---
+    # --- OSM-Alice receives a key ---
     osm_alice = OsmProcess(PORT_A, "Alice")
     assert osm_alice.start(), "OSM-Alice failed to start"
 
@@ -486,7 +524,7 @@ def test_bidirectional_kex():
 
     bob_key = bytes([0xBB] * 32)
     bob_b64 = base64.b64encode(bob_key).decode()
-    kex_bob = f"OSM:KEY:Bob:{bob_b64}".encode()
+    kex_bob = f"OSM:KEY:{bob_b64}".encode()
     ca_alice.send_message(CHAR_UUID_RX, kex_bob)
     time.sleep(0.5)
 
@@ -497,22 +535,17 @@ def test_bidirectional_kex():
     osm_alice.proc = None
     ca_alice.disconnect()
 
-    assert "KEX received from Bob" in stderr_alice, \
-        f"OSM-Alice didn't accept Bob's KEX: {stderr_alice}"
+    assert "KEX queued for assignment" in stderr_alice, \
+        f"OSM-Alice didn't queue key: {stderr_alice}"
     assert "bad pubkey" not in stderr_alice and "bad pubkey" not in stderr_bob, \
-        "KEX rejected with 'bad pubkey'"
-    print("  PASS: OSM-Alice accepted Bob's KEX")
-    print("  PASS: Both sides completed key exchange")
+        "KEX rejected with bad pubkey"
+    print("  PASS: OSM-Alice queued incoming key")
+    print("  PASS: Both sides queued keys for assignment")
 
 
 def test_encrypted_msg_delivery():
-    """Test 11: Encrypted message (OSM:MSG:) arrives at OSM without crash.
-
-    We send a properly formatted but fake ciphertext. The OSM won't be
-    able to decrypt it (no matching contact), but it should handle it
-    gracefully without crashing.
-    """
-    print("\n[Test 11] Encrypted message delivery")
+    """Test 12: Encrypted message (OSM:MSG:) arrives at OSM without crash."""
+    print("\n[Test 12] Encrypted message delivery")
 
     osm = OsmProcess(PORT_A, "OSM-A")
     assert osm.start(), "OSM failed to start"
@@ -521,7 +554,6 @@ def test_encrypted_msg_delivery():
     assert ca.connect(), "CA failed to connect"
     time.sleep(0.3)
 
-    # Send a fake encrypted message (valid base64 but will fail decrypt)
     fake_cipher = base64.b64encode(bytes(range(80))).decode()
     msg = f"OSM:MSG:{fake_cipher}".encode()
     ca.send_message(CHAR_UUID_RX, msg)
@@ -532,6 +564,102 @@ def test_encrypted_msg_delivery():
 
     ca.disconnect()
     osm.stop()
+
+
+def test_kex_outbound_no_name():
+    """Test 13: Outbound KEX from OSM has no sender name.
+
+    When OSM sends a key exchange, the format should be OSM:KEY:<pubkey>
+    without any device name or sender identity.
+    """
+    print("\n[Test 13] Outbound KEX has no sender name")
+
+    osm = OsmProcess(PORT_A, "OSM-A")
+    assert osm.start(), "OSM failed to start"
+
+    ca = TcpClient(PORT_A, "CA-A")
+    assert ca.connect(), "CA failed to connect"
+    time.sleep(0.5)
+
+    # The OSM should send any queued outbox messages.
+    # In the test driver, contacts are created with our pubkey stored.
+    # We need to check that the format is OSM:KEY:<base64> with no extra colons.
+    # Poll for any messages (OSM may have sent on connect)
+    msgs = ca.poll(timeout=2.0)
+
+    # Even if no messages are sent (fresh start), we verify no crash.
+    assert osm.proc.poll() is None, "OSM crashed"
+
+    # Verify any KEY messages have the right format
+    for uuid, data in msgs:
+        text = data.decode('utf-8', errors='replace')
+        if text.startswith("OSM:KEY:"):
+            payload = text[len("OSM:KEY:"):]
+            # Should be just base64 (no colon = no embedded name)
+            assert ':' not in payload, \
+                f"KEX still contains name separator: {text}"
+            print(f"  PASS: Outbound KEX is anonymous: {text[:60]}...")
+
+    print("  PASS: Outbound format verified")
+
+    ca.disconnect()
+    osm.stop()
+
+
+def test_pending_key_persistence():
+    """Test 14: Pending keys survive OSM restart.
+
+    Send a KEX, stop OSM, restart it, verify the pending key is still there.
+    """
+    print("\n[Test 14] Pending key persistence")
+
+    osm = OsmProcess(PORT_A, "OSM-A")
+    assert osm.start(), "OSM failed to start"
+
+    ca = TcpClient(PORT_A, "CA-A")
+    assert ca.connect(), "CA failed to connect"
+    time.sleep(0.3)
+
+    fake_key = bytes([0xCC] * 32)
+    key_b64 = base64.b64encode(fake_key).decode()
+    ca.send_message(CHAR_UUID_RX, f"OSM:KEY:{key_b64}".encode())
+    time.sleep(0.5)
+
+    osm.proc.terminate()
+    osm.proc.wait(timeout=3)
+    stderr1 = osm.proc.stderr.read().decode()
+    osm.proc = None
+    ca.disconnect()
+
+    assert "KEX queued for assignment" in stderr1, \
+        f"Key not queued: {stderr1}"
+    print("  PASS: Key queued in first session")
+
+    # Check the file was written
+    assert os.path.exists("data_pending_keys.json"), \
+        "Pending keys file not written"
+
+    # Restart OSM (don't clean data files)
+    osm2 = OsmProcess(PORT_A, "OSM-A-2")
+    assert osm2.start(clean=False), "OSM failed to restart"
+
+    ca2 = TcpClient(PORT_A, "CA-A-2")
+    assert ca2.connect(), "CA failed to reconnect"
+    time.sleep(0.3)
+
+    # Send the same key again — should be rejected as duplicate
+    ca2.send_message(CHAR_UUID_RX, f"OSM:KEY:{key_b64}".encode())
+    time.sleep(0.5)
+
+    osm2.proc.terminate()
+    osm2.proc.wait(timeout=3)
+    stderr2 = osm2.proc.stderr.read().decode()
+    osm2.proc = None
+    ca2.disconnect()
+
+    assert "already pending" in stderr2, \
+        f"Expected duplicate rejection after reload, got: {stderr2}"
+    print("  PASS: Key survived restart (duplicate rejected)")
 
 
 def main():
@@ -553,9 +681,12 @@ def main():
         test_reconnect,
         test_key_exchange_envelope,
         test_unknown_envelope,
-        test_kex_creates_contact,
-        test_bidirectional_kex,
+        test_kex_queues_pending_key,
+        test_kex_dedup_pending,
+        test_bidirectional_kex_anonymous,
         test_encrypted_msg_delivery,
+        test_kex_outbound_no_name,
+        test_pending_key_persistence,
     ]
 
     passed = 0

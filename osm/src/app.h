@@ -20,6 +20,7 @@
 #define MAX_CIPHER_LEN  2048
 #define MAX_KEY_LEN     256
 #define MAX_OUTBOX      32
+#define MAX_PENDING_KEYS 8
 
 /*====================
    DATA TYPES
@@ -38,6 +39,11 @@ typedef struct {
     uint32_t unread_count;
     time_t   created_at;
 } contact_t;
+
+typedef struct {
+    char     pubkey_b64[MAX_KEY_LEN];
+    time_t   received_at;
+} pending_key_t;
 
 typedef enum {
     MSG_SENT,
@@ -64,6 +70,7 @@ typedef enum {
     SCR_COMPOSE,
     SCR_INBOX,
     SCR_CONVERSATION,
+    SCR_ASSIGN_KEY,
     SCR_COUNT
 } screen_id_t;
 
@@ -114,6 +121,10 @@ typedef struct {
     uint32_t      message_count;
     uint32_t      next_contact_id;
     uint32_t      next_message_id;
+
+    /* Pending inbound key exchanges (awaiting user assignment) */
+    pending_key_t pending_keys[MAX_PENDING_KEYS];
+    uint32_t      pending_key_count;
 } app_state_t;
 
 /* Global app state */
@@ -144,6 +155,12 @@ void app_transport_poll(void);
 #define MSG_PREFIX_MSG "OSM:MSG:"
 void app_send_key_exchange(const char *pubkey_b64);
 void app_send_encrypted_msg(const char *ciphertext_b64);
+
+/* Pending key queue management */
+bool app_pending_key_add(const char *pubkey_b64);
+void app_pending_key_remove(uint32_t index);
+void app_pending_keys_save(void);
+void app_pending_keys_load(void);
 
 /* Screenshot helper */
 void app_take_screenshot(const char *name);

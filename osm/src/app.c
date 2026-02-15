@@ -9,6 +9,7 @@
 #include "screens/scr_compose.h"
 #include "screens/scr_inbox.h"
 #include "screens/scr_conversation.h"
+#include "screens/scr_assign_key.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -93,72 +94,46 @@ static void on_ca_disconnect(int client_idx)
     app_log("Transport", buf);
 }
 
-static void handle_key_exchange_msg(const char *payload)
+static void handle_key_exchange_msg(const char *pubkey_b64)
 {
-    /* Format: <sender_name>:<pubkey_b64> */
-    const char *colon = strchr(payload, ':');
-    if (!colon || colon == payload) {
-        app_log("CA->OSM", "Malformed KEX message (no colon)");
-        return;
-    }
-
-    char sender_name[MAX_NAME_LEN];
-    size_t name_len = (size_t)(colon - payload);
-    if (name_len >= MAX_NAME_LEN) name_len = MAX_NAME_LEN - 1;
-    memcpy(sender_name, payload, name_len);
-    sender_name[name_len] = '\0';
-
-    const char *pubkey_b64 = colon + 1;
-
-    /* Validate the pubkey is decodable */
+    /* Format is now just <pubkey_b64> (no sender name) */
     uint8_t peer_pubkey[CRYPTO_PUBKEY_BYTES];
     if (!crypto_b64_to_pubkey(pubkey_b64, peer_pubkey)) {
         app_log("CA->OSM", "Malformed KEX message (bad pubkey)");
         return;
     }
 
-    /* Look for existing contact with this name */
-    contact_t *c = NULL;
+    /* Check for duplicate — is this pubkey already on a contact? */
     for (uint32_t i = 0; i < g_app.contact_count; i++) {
-        if (strcmp(g_app.contacts[i].name, sender_name) == 0) {
-            c = &g_app.contacts[i];
-            break;
+        if (strcmp(g_app.contacts[i].public_key, pubkey_b64) == 0) {
+            app_log("CA->OSM", "KEX pubkey already known, ignoring");
+            return;
         }
     }
 
-    if (c && c->status == CONTACT_PENDING_SENT) {
-        /* We initiated, they responded — store their pubkey, establish */
-        strncpy(c->public_key, pubkey_b64, MAX_KEY_LEN - 1);
-        c->status = CONTACT_ESTABLISHED;
-        contacts_save();
-        char ctx[128];
-        snprintf(ctx, sizeof(ctx), "KEX complete: %s", sender_name);
-        app_log(ctx, pubkey_b64);
-    } else if (!c) {
-        /* New inbound key exchange — auto-create contact */
-        c = contacts_add(sender_name);
-        if (c) {
-            strncpy(c->public_key, pubkey_b64, MAX_KEY_LEN - 1);
-            c->status = CONTACT_PENDING_RECEIVED;
-            contacts_save();
-            char ctx[128];
-            snprintf(ctx, sizeof(ctx), "KEX received from %s", sender_name);
-            app_log(ctx, pubkey_b64);
+    /* Check for duplicate in pending queue */
+    for (uint32_t i = 0; i < g_app.pending_key_count; i++) {
+        if (strcmp(g_app.pending_keys[i].pubkey_b64, pubkey_b64) == 0) {
+            app_log("CA->OSM", "KEX pubkey already pending, ignoring");
+            return;
         }
-    } else {
-        char ctx[128];
-        snprintf(ctx, sizeof(ctx), "KEX ignored (status=%d) from %s",
-                 c->status, sender_name);
-        app_log(ctx, pubkey_b64);
     }
 
-    /* Refresh UI if we're on a relevant screen */
-    if (g_app.current_screen == SCR_HOME)
+    /* Store in pending queue for user to assign */
+    if (!app_pending_key_add(pubkey_b64)) {
+        app_log("CA->OSM", "Pending key queue full, dropping");
+        return;
+    }
+
+    app_log("CA->OSM", "KEX queued for assignment");
+    app_pending_keys_save();
+
+    /* Navigate to assign screen or refresh relevant screen */
+    if (g_app.current_screen == SCR_HOME) {
         scr_home_refresh();
-    else if (g_app.current_screen == SCR_CONTACTS)
-        scr_contacts_refresh();
-    else if (g_app.current_screen == SCR_KEY_EXCHANGE)
-        scr_key_exchange_refresh();
+    } else if (g_app.current_screen == SCR_ASSIGN_KEY) {
+        scr_assign_key_refresh();
+    }
 }
 
 static void handle_encrypted_msg(const char *ciphertext)
@@ -247,6 +222,7 @@ void app_init(lv_display_t *disp,
     identity_load(&g_app.identity);
     contacts_load();
     messages_load();
+    app_pending_keys_load();
 
     /* Apply dark theme */
     lv_theme_t *th = lv_theme_default_init(
@@ -267,6 +243,7 @@ void app_init(lv_display_t *disp,
     scr_compose_create();
     scr_inbox_create();
     scr_conversation_create();
+    scr_assign_key_create();
 
     /* Start transport (non-blocking, OK if port unavailable in test mode) */
     transport_init(&g_app.transport, port);
@@ -371,8 +348,8 @@ void app_transport_poll(void)
 void app_send_key_exchange(const char *pubkey_b64)
 {
     char envelope[MAX_CIPHER_LEN];
-    snprintf(envelope, sizeof(envelope), "%s%s:%s",
-             MSG_PREFIX_KEY, g_app.device_name, pubkey_b64);
+    snprintf(envelope, sizeof(envelope), "%s%s",
+             MSG_PREFIX_KEY, pubkey_b64);
     app_outbox_enqueue(CHAR_UUID_TX, envelope);
 }
 
@@ -382,6 +359,83 @@ void app_send_encrypted_msg(const char *ciphertext_b64)
     snprintf(envelope, sizeof(envelope), "%s%s",
              MSG_PREFIX_MSG, ciphertext_b64);
     app_outbox_enqueue(CHAR_UUID_TX, envelope);
+}
+
+/*---------- Pending key queue ----------*/
+#define PENDING_KEYS_FILE "data_pending_keys.json"
+
+bool app_pending_key_add(const char *pubkey_b64)
+{
+    if (g_app.pending_key_count >= MAX_PENDING_KEYS) return false;
+    pending_key_t *pk = &g_app.pending_keys[g_app.pending_key_count];
+    memset(pk, 0, sizeof(*pk));
+    strncpy(pk->pubkey_b64, pubkey_b64, MAX_KEY_LEN - 1);
+    pk->received_at = time(NULL);
+    g_app.pending_key_count++;
+    return true;
+}
+
+void app_pending_key_remove(uint32_t index)
+{
+    if (index >= g_app.pending_key_count) return;
+    for (uint32_t i = index; i < g_app.pending_key_count - 1; i++)
+        g_app.pending_keys[i] = g_app.pending_keys[i + 1];
+    g_app.pending_key_count--;
+    memset(&g_app.pending_keys[g_app.pending_key_count], 0, sizeof(pending_key_t));
+}
+
+void app_pending_keys_save(void)
+{
+    FILE *f = fopen(PENDING_KEYS_FILE, "w");
+    if (!f) return;
+    fprintf(f, "[\n");
+    for (uint32_t i = 0; i < g_app.pending_key_count; i++) {
+        pending_key_t *pk = &g_app.pending_keys[i];
+        fprintf(f, "  {\"pubkey\":\"%s\", \"received\":%ld}%s\n",
+                pk->pubkey_b64, (long)pk->received_at,
+                (i < g_app.pending_key_count - 1) ? "," : "");
+    }
+    fprintf(f, "]\n");
+    fclose(f);
+}
+
+void app_pending_keys_load(void)
+{
+    FILE *f = fopen(PENDING_KEYS_FILE, "r");
+    if (!f) return;
+
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (len <= 0) { fclose(f); return; }
+
+    char *buf = malloc(len + 1);
+    fread(buf, 1, len, f);
+    buf[len] = '\0';
+    fclose(f);
+
+    g_app.pending_key_count = 0;
+    const char *p = buf;
+    while (g_app.pending_key_count < MAX_PENDING_KEYS) {
+        const char *pk_str = strstr(p, "\"pubkey\":\"");
+        if (!pk_str) break;
+        pk_str += 10;
+        const char *end = strchr(pk_str, '"');
+        if (!end) break;
+
+        pending_key_t *pk = &g_app.pending_keys[g_app.pending_key_count];
+        memset(pk, 0, sizeof(*pk));
+        size_t klen = end - pk_str;
+        if (klen >= MAX_KEY_LEN) klen = MAX_KEY_LEN - 1;
+        memcpy(pk->pubkey_b64, pk_str, klen);
+
+        const char *ts_str = strstr(pk_str, "\"received\":");
+        if (ts_str) sscanf(ts_str, "\"received\":%ld", (long *)&pk->received_at);
+
+        g_app.pending_key_count++;
+        p = end + 1;
+    }
+    free(buf);
 }
 
 /*---------- Test driver ----------*/
@@ -1031,8 +1085,8 @@ static void test_execute_step(void)
 
         /* Verify the contact list is populated (not showing empty label) */
         lv_obj_t *scr = g_app.screens[SCR_HOME];
-        /* contact_list is child 1 of screen (after header) */
-        lv_obj_t *clist = lv_obj_get_child(scr, 1);
+        /* contact_list is child 2 of screen (header, pending_banner, list) */
+        lv_obj_t *clist = lv_obj_get_child(scr, 2);
         uint32_t children = lv_obj_get_child_count(clist);
         /* Should have more than just the empty_label (which is hidden) */
         if (children > 1) test_pass("Home screen populated after reload");
