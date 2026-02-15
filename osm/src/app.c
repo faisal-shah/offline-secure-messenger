@@ -1,7 +1,6 @@
 #include "app.h"
 #include "data/contacts.h"
 #include "data/messages.h"
-#include "io_monitor.h"
 #include "screens/scr_home.h"
 #include "screens/scr_contacts.h"
 #include "screens/scr_key_exchange.h"
@@ -62,19 +61,27 @@ void app_take_screenshot(const char *name)
     printf("  SCREENSHOT: %s\n", path);
 }
 
+/*---------- Logging ----------*/
+void app_log(const char *context, const char *data)
+{
+    time_t now = time(NULL);
+    struct tm *tm = localtime(&now);
+    char ts[16];
+    strftime(ts, sizeof(ts), "%H:%M:%S", tm);
+    fprintf(stderr, "[%s] %s: %.60s%s\n",
+            ts, context, data, strlen(data) > 60 ? "..." : "");
+}
+
 /*---------- App lifecycle ----------*/
-void app_init(lv_display_t *disp, lv_display_t *io_disp,
+void app_init(lv_display_t *disp,
               lv_indev_t *mouse, lv_indev_t *kb,
-              lv_group_t *dev_group, lv_group_t *io_group,
-              bool test_mode)
+              lv_group_t *dev_group, bool test_mode)
 {
     memset(&g_app, 0, sizeof(g_app));
     g_app.dev_disp = disp;
-    g_app.io_disp = io_disp;
     g_app.mouse = mouse;
     g_app.keyboard = kb;
     g_app.dev_group = dev_group;
-    g_app.io_group = io_group;
     g_app.test_mode = test_mode;
     g_app.quit = false;
     g_app.next_contact_id = 1;
@@ -108,13 +115,6 @@ void app_init(lv_display_t *disp, lv_display_t *io_disp,
     /* Start on home */
     app_navigate_to(SCR_HOME);
     scr_home_refresh();
-
-    /* Create I/O monitor UI on second display */
-    if (io_disp) {
-        io_monitor_create(io_disp, g_app.io_group);
-        io_monitor_refresh();
-        lv_display_set_default(disp);
-    }
 
     if (test_mode) {
         printf("=== SELF-TEST MODE ===\n");

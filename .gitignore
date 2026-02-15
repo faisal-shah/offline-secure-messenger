@@ -1,4 +1,5 @@
-build/
+osm/build/
 *.bmp
-data_contacts.json
-data_messages.json
+osm/data_contacts.json
+osm/data_messages.json
+osm/data_identity.json

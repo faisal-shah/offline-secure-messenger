@@ -6,7 +6,6 @@
 #include "../app.h"
 #include "../data/contacts.h"
 #include "../crypto_sim.h"
-#include "../io_monitor.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -44,10 +43,9 @@ static void action_cb(lv_event_t *e)
 
         {
             char ctx[128];
-            snprintf(ctx, sizeof(ctx), "DH Key " LV_SYMBOL_RIGHT " %s", c->name);
-            io_monitor_log(ctx, c->public_key);
+            snprintf(ctx, sizeof(ctx), "DH Key -> %s", c->name);
+            app_log(ctx, c->public_key);
         }
-        io_monitor_refresh();
 
         scr_key_exchange_refresh();
         break;

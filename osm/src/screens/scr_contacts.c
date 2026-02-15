@@ -8,7 +8,6 @@
 #include "../data/contacts.h"
 #include "../data/messages.h"
 #include "../crypto_sim.h"
-#include "../io_monitor.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -39,10 +38,9 @@ static void add_contact_confirm_cb(lv_event_t *e)
             /* Log DH key output */
             {
                 char ctx[128];
-                snprintf(ctx, sizeof(ctx), "DH Key " LV_SYMBOL_RIGHT " %s (initiated)", c->name);
-                io_monitor_log(ctx, c->public_key);
+                snprintf(ctx, sizeof(ctx), "DH Key -> %s (initiated)", c->name);
+                app_log(ctx, c->public_key);
             }
-            io_monitor_refresh();
 
             /* Navigate to key exchange wizard */
             g_app.selected_contact_id = c->id;
@@ -89,7 +87,6 @@ static void delete_contact_yes_cb(lv_event_t *e)
     contacts_delete(pending_delete_id);
     contacts_save();
     messages_save();
-    io_monitor_refresh();
     scr_contacts_refresh();
 }
 

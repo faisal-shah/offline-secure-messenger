@@ -5,7 +5,6 @@
 
 #include "lvgl.h"
 #include "app.h"
-#include "io_monitor.h"
 #include <unistd.h>
 #include <time.h>
 #include <string.h>
@@ -43,26 +42,8 @@ int main(int argc, char *argv[])
     lv_group_t *dev_group = lv_group_create();
     lv_indev_set_group(kb, dev_group);
 
-    /* I/O Monitor display — separate window (skip in test mode) */
-    lv_display_t *io_disp = NULL;
-    lv_group_t *io_group = NULL;
-    if (!test_mode) {
-        io_disp = lv_sdl_window_create(IO_MON_HOR_RES, IO_MON_VER_RES);
-        lv_sdl_window_set_title(io_disp, "I/O Monitor");
-
-        /* Must set io_disp as default so indevs bind to it */
-        lv_display_set_default(io_disp);
-        lv_sdl_mouse_create();
-        lv_indev_t *io_kb = lv_sdl_keyboard_create();
-        io_group = lv_group_create();
-        lv_indev_set_group(io_kb, io_group);
-
-        /* Restore device as default display */
-        lv_display_set_default(dev_disp);
-    }
-
     /* Initialize the application */
-    app_init(dev_disp, io_disp, mouse, kb, dev_group, io_group, test_mode);
+    app_init(dev_disp, mouse, kb, dev_group, test_mode);
 
     /* Main loop */
     while (!app_should_quit()) {

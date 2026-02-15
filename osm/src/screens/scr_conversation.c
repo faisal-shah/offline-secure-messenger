@@ -7,7 +7,6 @@
 #include "../data/contacts.h"
 #include "../data/messages.h"
 #include "../crypto_sim.h"
-#include "../io_monitor.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -37,8 +36,8 @@ static void send_reply_cb(lv_event_t *e)
         contact_t *c = contacts_find_by_id(g_app.selected_contact_id);
         if (c) {
             char ctx[128];
-            snprintf(ctx, sizeof(ctx), "Encrypted Msg " LV_SYMBOL_RIGHT " %s", c->name);
-            io_monitor_log(ctx, msg->ciphertext);
+            snprintf(ctx, sizeof(ctx), "Encrypted Msg -> %s", c->name);
+            app_log(ctx, msg->ciphertext);
         }
     }
     messages_save();

@@ -8,7 +8,6 @@
 #include "../data/contacts.h"
 #include "../data/messages.h"
 #include "../crypto_sim.h"
-#include "../io_monitor.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -57,10 +56,10 @@ static void send_cb(lv_event_t *e)
     if (msg) {
         messages_save();
 
-        /* Log to I/O monitor */
+        /* Log to stderr */
         char ctx[128];
-        snprintf(ctx, sizeof(ctx), "Encrypted Msg " LV_SYMBOL_RIGHT " %s", c->name);
-        io_monitor_log(ctx, msg->ciphertext);
+        snprintf(ctx, sizeof(ctx), "Encrypted Msg -> %s", c->name);
+        app_log(ctx, msg->ciphertext);
 
         char status_text[128];
         snprintf(status_text, sizeof(status_text),

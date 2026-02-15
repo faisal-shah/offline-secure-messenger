@@ -1,240 +1,97 @@
-# Secure Communicator — UI Prototype
+# Offline Secure Messenger
 
-A desktop simulator for a hardware secure-messaging device. The real device
-uses a microcontroller with a 320×240 display and a BlackBerry-style keyboard
-with a trackball. This prototype recreates the UI using **LVGL 9.4** on
-**SDL2** so the interaction design can be iterated on a PC before targeting
-hardware.
+A secure offline messaging system with two components:
 
-The device encrypts messages and acts as a USB/Bluetooth keyboard to type
-ciphertext on an untrusted host (phone or PC). The host never sees plaintext.
-No real cryptography is implemented here — this is purely a UI/UX prototype.
+1. **OSM** (Offline Secure Messenger) — a microcontroller-based device with a
+   320×240 display and BlackBerry-style keyboard. Handles all encryption,
+   decryption, and key management. Plaintext never leaves this device.
+2. **Companion App** (CA) — an Android/desktop app that bridges encrypted
+   ciphertext between the OSM and the user's regular messaging apps via BLE.
+
+The host device (phone/PC) is treated as a compromised communications pipe —
+it only ever sees ciphertext.
 
 ## Architecture
 
 ```mermaid
-graph TD
-    subgraph Device Window ["Device Window (320×240)"]
-        HOME[Home Screen]
-        CONTACTS[Contacts Screen]
-        KEX[Key Exchange Wizard]
-        COMPOSE[Compose Screen]
-        INBOX[Inbox Screen]
-        CONV[Conversation Screen]
+graph LR
+    subgraph "Person A"
+        OSM_A[OSM-A Device]
+        CA_A[CA-A Phone]
+        APP_A[Signal / etc.]
+    end
+    subgraph "Person B"
+        OSM_B[OSM-B Device]
+        CA_B[CA-B Phone]
+        APP_B[Signal / etc.]
     end
 
-    subgraph IO ["I/O Monitor Window (500×400)"]
-        LOG[Output Log]
-        SIM[Simulation Controls]
-    end
-
-    subgraph Data ["Data Layer"]
-        CDB[(contacts.json)]
-        MDB[(messages.json)]
-    end
-
-    HOME --> CONTACTS
-    HOME --> COMPOSE
-    HOME --> INBOX
-    CONTACTS --> KEX
-    INBOX --> CONV
-    KEX -->|DH params| LOG
-    COMPOSE -->|ciphertext| LOG
-    SIM -->|simulated reply| KEX
-    SIM -->|simulated message| CONV
-    CONTACTS --> CDB
-    CONV --> MDB
+    OSM_A -->|ciphertext via BLE| CA_A
+    CA_A -->|user copies| APP_A
+    APP_A -.->|internet| APP_B
+    APP_B -->|user pastes| CA_B
+    CA_B -->|ciphertext via BLE| OSM_B
+    OSM_B -->|decrypted plaintext| OSM_B
 ```
 
-### Screens
+## Repository Structure
 
-| Screen | Purpose |
-|---|---|
-| **Home** | Dashboard with contact list, status icons, unread badges, and navigation |
-| **Contacts** | Add/view/delete contacts, tap a contact to start key exchange |
-| **Key Exchange** | 3-step Diffie-Hellman wizard (send params → receive reply → establish) |
-| **Compose** | Pick an established contact, type a message, send (outputs ciphertext) |
-| **Inbox** | Conversation list sorted by most-recent message |
-| **Conversation** | Chat bubbles with inline reply, delete individual messages or entire thread |
-
-### I/O Monitor (second window)
-
-A separate SDL window that shows what the device would output to the
-untrusted host, and provides simulation controls:
-
-- **Output log** — timestamped entries for DH parameters and ciphertext
-- **DH Reply buttons** — simulate receiving a Diffie-Hellman reply for pending contacts
-- **Incoming message injection** — pick a contact, type a message, inject it
-- **New contact simulation** — create a contact initiated from the remote side
-
-### Contact Lifecycle
-
-```mermaid
-stateDiagram-v2
-    [*] --> PendingSent: Add Contact
-    PendingSent --> PendingReceived: Receive DH Reply
-    PendingReceived --> Established: Complete Exchange
-    Established --> Established: Send/Receive Messages
+```
+offline-secure-messenger/
+├── osm/                    # OSM device firmware + desktop simulator
+│   ├── CMakeLists.txt
+│   ├── lv_conf.h
+│   ├── lvgl/               # LVGL 9.4 (git submodule)
+│   ├── src/                # C source — LVGL UI, data layer, crypto
+│   └── tests/
+├── companion-app/          # Companion App (planned — Kotlin Multiplatform)
+├── tests/                  # E2E integration tests (planned)
+├── LICENSE
+└── README.md               # This file
 ```
 
-### Contact & Message Management
+## Components
 
-- **Delete contact**: Red trash button on each contact row. Shows a confirmation
-  dialog warning that all messages with that contact will also be removed.
-- **Delete message thread**: Trash button in the conversation header clears all
-  messages for the current contact but preserves the contact itself.
-- **Delete individual message**: Tap any message bubble in the conversation view
-  to get a confirmation prompt for deleting just that message.
+### OSM (Offline Secure Messenger)
+
+Desktop simulator built with C + LVGL 9.4 + SDL2. See [`osm/README.md`](osm/README.md)
+for build instructions, screen descriptions, and technical details.
+
+**Target hardware**: LILYGO T-Deck (ESP32-S3, 320×240, BLE 5.0, QWERTY keyboard)
+
+### Companion App (planned)
+
+Kotlin Multiplatform + Compose Multiplatform targeting Android and desktop.
+Communicates with the OSM over BLE (TCP localhost for desktop simulation).
+
+## Quick Start
+
+```bash
+# Clone with submodules
+git clone --recurse-submodules <repo-url>
+cd offline-secure-messenger
+
+# Build and run OSM simulator
+cd osm
+mkdir -p build && cd build
+cmake .. && make -j$(nproc)
+./secure_communicator        # Interactive mode
+./secure_communicator --test # Automated tests (50 tests)
+```
 
 ## Prerequisites
 
 | Dependency | Version | Notes |
 |---|---|---|
-| GCC or Clang | C11 support | Any modern version |
+| GCC or Clang | C11 | Any modern version |
 | CMake | ≥ 3.16 | Build system |
 | SDL2 | ≥ 2.0 | `libsdl2-dev` on Debian/Ubuntu |
 | pkg-config | any | Used by CMake to find SDL2 |
-| Git | any | For the LVGL submodule |
-
-**Debian/Ubuntu one-liner:**
+| Git | any | For submodules |
 
 ```bash
 sudo apt-get install build-essential cmake libsdl2-dev pkg-config git
 ```
-
-LVGL 9.4.0 is included as a git submodule — no separate installation needed.
-
-## Building
-
-```bash
-# Clone (with submodule)
-git clone --recurse-submodules <repo-url>
-cd offline-secure-messenger
-
-# If you already cloned without submodules:
-git submodule update --init --recursive
-
-# Build
-mkdir -p build && cd build
-cmake ..
-make -j$(nproc)
-```
-
-The binary is produced at `build/secure_communicator`.
-
-### Incremental rebuild
-
-After code changes, just re-run make:
-
-```bash
-cd build && make -j$(nproc)
-```
-
-### Clean rebuild
-
-CMake doesn't support a full `make clean`. Delete the build directory instead:
-
-```bash
-rm -rf build && mkdir build && cd build && cmake .. && make -j$(nproc)
-```
-
-## Running
-
-### Interactive mode
-
-```bash
-cd build
-./secure_communicator
-```
-
-Two SDL windows open:
-
-1. **Secure Communicator** (640×480 — the 320×240 device display at 2× zoom)
-2. **I/O Monitor** (500×400 — simulation and output log)
-
-Use mouse and keyboard in both windows. Click textareas to focus them before
-typing.
-
-### Self-test mode
-
-```bash
-cd build
-./secure_communicator --test
-```
-
-Runs 50 automated tests covering all screens, navigation flows, button
-interactions, textarea input, and group management. Screenshots are saved to
-`screenshots/` as BMP files. The process exits with code 0 on success.
-
-### Smoke test (Python)
-
-```bash
-cd build
-python3 ../tests/smoke_test.py
-```
-
-Runs the built-in test mode and validates output + screenshot integrity.
-
-## Project Structure
-
-```
-secure-communicator/
-├── CMakeLists.txt          # Build configuration
-├── lv_conf.h               # LVGL compile-time settings
-├── lvgl/                   # LVGL 9.4.0 (git submodule)
-├── src/
-│   ├── main.c              # Entry point, dual-display + input setup
-│   ├── app.h               # Types, constants, app state struct
-│   ├── app.c               # App lifecycle, navigation, test driver
-│   ├── crypto_sim.h/c      # Fake encrypt/decrypt/DH (placeholder)
-│   ├── io_monitor.h/c      # Second SDL window (output log + sim controls)
-│   ├── data/
-│   │   ├── contacts.h/c    # Contact CRUD + JSON persistence
-│   │   └── messages.h/c    # Message CRUD + JSON persistence
-│   └── screens/
-│       ├── scr_home.h/c        # Home dashboard
-│       ├── scr_contacts.h/c    # Contact management
-│       ├── scr_key_exchange.h/c # DH key exchange wizard
-│       ├── scr_compose.h/c     # Message composition
-│       ├── scr_inbox.h/c       # Conversation list
-│       └── scr_conversation.h/c # Chat view
-├── tests/
-│   └── smoke_test.py       # Automated validation script
-├── data_contacts.json      # Persisted contacts (created at runtime)
-└── data_messages.json      # Persisted messages (created at runtime)
-```
-
-## Key Technical Decisions
-
-- **LVGL 9.4 + SDL2**: LVGL's built-in SDL driver renders the UI. Two
-  `lv_display_t` instances drive two SDL windows. Each display has its own
-  mouse and keyboard input devices.
-- **Manual input group management**: `lv_group_set_default()` is intentionally
-  avoided because it auto-adds widgets from all displays into one group,
-  causing cross-display focus issues. Textareas are explicitly added to the
-  correct group (`dev_group` or `io_group`).
-- **Display–indev binding**: `lv_indev_create()` binds to whichever display is
-  default at creation time. The code carefully sets the correct default before
-  creating each window's input devices.
-- **C11, no external deps beyond SDL2**: Keeps the path to microcontroller
-  deployment short. JSON persistence is hand-rolled (no cJSON).
-- **2× SDL zoom**: The 320×240 device display is rendered at 640×480 for
-  comfortable desktop use.
-- **Dark theme**: Configured via `lv_theme_default_init()` with a colour
-  palette designed for small embedded displays.
-
-## Configuration
-
-`lv_conf.h` controls LVGL's compile-time settings. Key values:
-
-| Setting | Value | Purpose |
-|---|---|---|
-| `LV_COLOR_DEPTH` | 16 | Match typical embedded LCD panels |
-| `LV_MEM_SIZE` | 128 KB | LVGL memory pool |
-| `LV_FONT_MONTSERRAT_*` | 10, 12, 14, 16 | Available font sizes |
-| `LV_FONT_DEFAULT` | Montserrat 12 | Default UI font |
-| `LV_USE_SDL` | 1 | Enable SDL2 display/input drivers |
-| `LV_SDL_DIRECT_EXIT` | 1 | `exit(0)` on SDL window close |
 
 ## License
 
