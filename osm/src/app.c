@@ -112,7 +112,7 @@ static void handle_key_exchange_msg(const char *payload)
 
     /* Validate the pubkey is decodable */
     uint8_t peer_pubkey[CRYPTO_PUBKEY_BYTES];
-    if (crypto_b64_to_pubkey(pubkey_b64, peer_pubkey) != 0) {
+    if (!crypto_b64_to_pubkey(pubkey_b64, peer_pubkey)) {
         app_log("CA->OSM", "Malformed KEX message (bad pubkey)");
         return;
     }
@@ -169,7 +169,7 @@ static void handle_encrypted_msg(const char *ciphertext)
         if (c->status != CONTACT_ESTABLISHED) continue;
 
         uint8_t peer_pubkey[CRYPTO_PUBKEY_BYTES];
-        if (crypto_b64_to_pubkey(c->public_key, peer_pubkey) != 0)
+        if (!crypto_b64_to_pubkey(c->public_key, peer_pubkey))
             continue;
 
         char plaintext[MAX_TEXT_LEN];

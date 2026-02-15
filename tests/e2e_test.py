@@ -23,10 +23,15 @@ import sys
 import time
 import os
 import signal
+import base64
+import glob as globmod
 
 BINARY = os.path.join(os.path.dirname(__file__), "..", "osm", "build", "secure_communicator")
 PORT_A = 19210
 PORT_B = 19211
+
+# Data files that OSM persists (relative to cwd)
+DATA_FILES = ["data_contacts.json", "data_messages.json", "data_identity.json"]
 
 # Fragmentation constants (must match transport.h)
 FRAG_FLAG_START = 0x01
@@ -162,7 +167,16 @@ class OsmProcess:
         self.name = name
         self.proc: subprocess.Popen | None = None
 
-    def start(self) -> bool:
+    @staticmethod
+    def cleanup_data_files():
+        """Remove persisted data files so each test starts fresh."""
+        for f in DATA_FILES:
+            if os.path.exists(f):
+                os.remove(f)
+
+    def start(self, clean: bool = True) -> bool:
+        if clean:
+            self.cleanup_data_files()
         env = os.environ.copy()
         env["SDL_VIDEODRIVER"] = "dummy"
         try:
@@ -388,6 +402,138 @@ def test_unknown_envelope():
     osm.stop()
 
 
+def test_kex_creates_contact():
+    """Test 9: CA→OSM key exchange creates a contact on the OSM.
+
+    Verifies that when a valid OSM:KEY:<name>:<pubkey> message is sent
+    from the CA to the OSM, the OSM logs that it processed the KEX
+    (not the 'bad pubkey' error that was caused by the bool!=0 bug).
+    """
+    print("\n[Test 9] CA→OSM KEX creates contact")
+
+    osm = OsmProcess(PORT_A, "OSM-A")
+    assert osm.start(), "OSM failed to start"
+
+    ca = TcpClient(PORT_A, "CA-A")
+    assert ca.connect(), "CA failed to connect"
+    time.sleep(0.3)
+
+    # Generate a valid 32-byte pubkey encoded as base64
+    fake_key = bytes(range(32))
+    key_b64 = base64.b64encode(fake_key).decode()
+    kex_msg = f"OSM:KEY:TestSender:{key_b64}".encode()
+    ca.send_message(CHAR_UUID_RX, kex_msg)
+    time.sleep(0.5)
+
+    assert osm.proc.poll() is None, "OSM crashed"
+
+    # Read stderr to verify the KEX was accepted (not rejected)
+    osm.proc.terminate()
+    osm.proc.wait(timeout=3)
+    stderr = osm.proc.stderr.read().decode()
+    osm.proc = None  # prevent double-stop
+
+    assert "KEX received from TestSender" in stderr, \
+        f"Expected KEX acceptance log, got: {stderr}"
+    assert "bad pubkey" not in stderr, \
+        f"KEX was rejected with 'bad pubkey': {stderr}"
+    print("  PASS: OSM accepted KEX and created contact 'TestSender'")
+
+
+def test_bidirectional_kex():
+    """Test 10: Full bidirectional key exchange between two OSM instances.
+
+    Simulates:
+    1. CA-Bob sends OSM:KEY:Alice:<pubkey> to OSM-Bob → auto-creates contact
+    2. CA-Alice sends OSM:KEY:Bob:<pubkey> to OSM-Alice → auto-creates contact
+    Both OSMs should accept the KEX messages.
+    Note: data file conflicts are avoided by cleaning between starts.
+    """
+    print("\n[Test 10] Bidirectional key exchange")
+
+    # --- OSM-Bob receives Alice's pubkey ---
+    osm_bob = OsmProcess(PORT_B, "Bob")
+    assert osm_bob.start(), "OSM-Bob failed to start"
+
+    ca_bob = TcpClient(PORT_B, "CA-Bob")
+    assert ca_bob.connect(), "CA-Bob failed to connect"
+    time.sleep(0.3)
+
+    alice_key = bytes([0xAA] * 32)
+    alice_b64 = base64.b64encode(alice_key).decode()
+    kex_alice = f"OSM:KEY:Alice:{alice_b64}".encode()
+    ca_bob.send_message(CHAR_UUID_RX, kex_alice)
+    time.sleep(0.5)
+
+    assert osm_bob.proc.poll() is None, "OSM-Bob crashed"
+    osm_bob.proc.terminate()
+    osm_bob.proc.wait(timeout=3)
+    stderr_bob = osm_bob.proc.stderr.read().decode()
+    osm_bob.proc = None
+    ca_bob.disconnect()
+
+    assert "KEX received from Alice" in stderr_bob, \
+        f"OSM-Bob didn't accept Alice's KEX: {stderr_bob}"
+    print("  PASS: OSM-Bob accepted Alice's KEX")
+
+    # --- OSM-Alice receives Bob's pubkey ---
+    osm_alice = OsmProcess(PORT_A, "Alice")
+    assert osm_alice.start(), "OSM-Alice failed to start"
+
+    ca_alice = TcpClient(PORT_A, "CA-Alice")
+    assert ca_alice.connect(), "CA-Alice failed to connect"
+    time.sleep(0.3)
+
+    bob_key = bytes([0xBB] * 32)
+    bob_b64 = base64.b64encode(bob_key).decode()
+    kex_bob = f"OSM:KEY:Bob:{bob_b64}".encode()
+    ca_alice.send_message(CHAR_UUID_RX, kex_bob)
+    time.sleep(0.5)
+
+    assert osm_alice.proc.poll() is None, "OSM-Alice crashed"
+    osm_alice.proc.terminate()
+    osm_alice.proc.wait(timeout=3)
+    stderr_alice = osm_alice.proc.stderr.read().decode()
+    osm_alice.proc = None
+    ca_alice.disconnect()
+
+    assert "KEX received from Bob" in stderr_alice, \
+        f"OSM-Alice didn't accept Bob's KEX: {stderr_alice}"
+    assert "bad pubkey" not in stderr_alice and "bad pubkey" not in stderr_bob, \
+        "KEX rejected with 'bad pubkey'"
+    print("  PASS: OSM-Alice accepted Bob's KEX")
+    print("  PASS: Both sides completed key exchange")
+
+
+def test_encrypted_msg_delivery():
+    """Test 11: Encrypted message (OSM:MSG:) arrives at OSM without crash.
+
+    We send a properly formatted but fake ciphertext. The OSM won't be
+    able to decrypt it (no matching contact), but it should handle it
+    gracefully without crashing.
+    """
+    print("\n[Test 11] Encrypted message delivery")
+
+    osm = OsmProcess(PORT_A, "OSM-A")
+    assert osm.start(), "OSM failed to start"
+
+    ca = TcpClient(PORT_A, "CA-A")
+    assert ca.connect(), "CA failed to connect"
+    time.sleep(0.3)
+
+    # Send a fake encrypted message (valid base64 but will fail decrypt)
+    fake_cipher = base64.b64encode(bytes(range(80))).decode()
+    msg = f"OSM:MSG:{fake_cipher}".encode()
+    ca.send_message(CHAR_UUID_RX, msg)
+    time.sleep(0.5)
+
+    assert osm.proc.poll() is None, "OSM crashed on encrypted message"
+    print("  PASS: OSM handled encrypted message without crash")
+
+    ca.disconnect()
+    osm.stop()
+
+
 def main():
     if not os.path.isfile(BINARY):
         print(f"ERROR: OSM binary not found at {BINARY}")
@@ -407,6 +553,9 @@ def main():
         test_reconnect,
         test_key_exchange_envelope,
         test_unknown_envelope,
+        test_kex_creates_contact,
+        test_bidirectional_kex,
+        test_encrypted_msg_delivery,
     ]
 
     passed = 0
