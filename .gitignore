@@ -3,3 +3,9 @@ osm/build/
 osm/data_contacts.json
 osm/data_messages.json
 osm/data_identity.json
+
+# Companion App
+companion-app/.gradle/
+companion-app/build/
+companion-app/*/build/
+companion-app/local.properties

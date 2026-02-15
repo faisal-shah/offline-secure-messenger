@@ -42,9 +42,11 @@ offline-secure-messenger/
 │   ├── CMakeLists.txt
 │   ├── lv_conf.h
 │   ├── lvgl/               # LVGL 9.4 (git submodule)
-│   ├── src/                # C source — LVGL UI, data layer, crypto
+│   ├── src/                # C source — LVGL UI, data, crypto, transport
 │   └── tests/
-├── companion-app/          # Companion App (planned — Kotlin Multiplatform)
+├── companion-app/          # Companion App (Kotlin Multiplatform + Compose)
+│   ├── shared/             # Common code (model, transport, UI)
+│   └── desktopApp/         # Desktop entry point
 ├── tests/                  # E2E integration tests (planned)
 ├── LICENSE
 └── README.md               # This file
@@ -59,10 +61,11 @@ for build instructions, screen descriptions, and technical details.
 
 **Target hardware**: LILYGO T-Deck (ESP32-S3, 320×240, BLE 5.0, QWERTY keyboard)
 
-### Companion App (planned)
+### Companion App
 
 Kotlin Multiplatform + Compose Multiplatform targeting Android and desktop.
-Communicates with the OSM over BLE (TCP localhost for desktop simulation).
+Communicates with the OSM over TCP (desktop simulation) or BLE (Android).
+See [`companion-app/README.md`](companion-app/README.md) for details.
 
 ## Quick Start
 
@@ -75,22 +78,27 @@ cd offline-secure-messenger
 cd osm
 mkdir -p build && cd build
 cmake .. && make -j$(nproc)
-./secure_communicator        # Interactive mode
-./secure_communicator --test # Automated tests (50 tests)
+./secure_communicator              # Interactive mode (port 19200)
+./secure_communicator --test       # Automated tests (69 tests)
+
+# In another terminal — build and run Companion App
+cd companion-app
+./gradlew :desktopApp:run
 ```
 
 ## Prerequisites
 
 | Dependency | Version | Notes |
 |---|---|---|
-| GCC or Clang | C11 | Any modern version |
-| CMake | ≥ 3.16 | Build system |
+| GCC or Clang | C11 | OSM build |
+| CMake | ≥ 3.16 | OSM build system |
 | SDL2 | ≥ 2.0 | `libsdl2-dev` on Debian/Ubuntu |
+| JDK | ≥ 11 | Companion App (JDK 17+ for packaging) |
 | pkg-config | any | Used by CMake to find SDL2 |
 | Git | any | For submodules |
 
 ```bash
-sudo apt-get install build-essential cmake libsdl2-dev pkg-config git
+sudo apt-get install build-essential cmake libsdl2-dev pkg-config git openjdk-17-jdk
 ```
 
 ## License
