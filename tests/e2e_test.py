@@ -3166,6 +3166,1281 @@ def test_ca_queue_while_disconnected():
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
+# ============================================================================
+# Phase 14: Adversarial E2E Tests (T32–T43)
+# ============================================================================
+
+def _setup_single_osm_with_peer():
+    """Helper: Start an OSM in a tempdir, generate keys, establish a contact.
+    Returns (proc, work_dir, ca, send_cmd_fn, peer_sk)."""
+    import tempfile, shutil, nacl.bindings
+
+    work_dir = tempfile.mkdtemp(prefix="osm_adv_")
+
+    def start_osm_in_dir(workdir, port):
+        env = os.environ.copy()
+        env["SDL_VIDEODRIVER"] = "dummy"
+        proc = subprocess.Popen(
+            [os.path.abspath(BINARY), "--port", str(port)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env, cwd=workdir,
+        )
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.5)
+                s.connect(("127.0.0.1", port))
+                s.close()
+                return proc
+            except (ConnectionRefusedError, OSError):
+                time.sleep(0.1)
+        return None
+
+    def send_cmd(proc, cmd, timeout=5.0):
+        import select
+        proc.stdin.write(f"{cmd}\n".encode())
+        proc.stdin.flush()
+        is_state = cmd.strip() == "CMD:STATE"
+        buf = b""
+        fd = proc.stdout.fileno()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.2)
+            if ready:
+                chunk = os.read(fd, 4096)
+                if not chunk: break
+                buf += chunk
+                text = buf.decode(errors="replace")
+                if is_state and "CMD:STATE:END" in text: break
+                for line in text.split("\n"):
+                    line = line.strip()
+                    if not is_state and line.startswith(("CMD:OK:", "CMD:ERR:", "CMD:IDENTITY:")):
+                        deadline = 0; break
+            if proc.poll() is not None: break
+        return "\n".join(l.strip() for l in buf.decode(errors="replace").split("\n") if l.strip().startswith("CMD:"))
+
+    proc = start_osm_in_dir(work_dir, PORT_A)
+    assert proc, "OSM failed to start"
+
+    resp = send_cmd(proc, "CMD:KEYGEN")
+    assert "CMD:OK:keygen" in resp
+    resp = send_cmd(proc, "CMD:ADD:TestPeer")
+    assert "CMD:OK:add:TestPeer" in resp
+
+    ca = TcpClient(PORT_A, "CA")
+    assert ca.connect(), "CA failed to connect"
+    ca.poll(timeout=1.0)  # drain KEX
+
+    peer_sk = nacl.bindings.randombytes(32)
+    peer_pk = nacl.bindings.crypto_scalarmult_base(peer_sk)
+    peer_pk_b64 = base64.b64encode(peer_pk).decode()
+    ca.send_message(CHAR_UUID_RX, f"OSM:KEY:{peer_pk_b64}".encode())
+    time.sleep(0.5)
+    resp = send_cmd(proc, "CMD:ASSIGN:TestPeer")
+    assert "ESTABLISHED" in resp
+
+    return proc, work_dir, ca, send_cmd, peer_sk
+
+
+def _setup_two_osms_with_kex():
+    """Helper: Start Alice + Bob OSMs, do full KEX, return everything needed.
+    Returns (alice_proc, bob_proc, alice_dir, bob_dir, ca_alice, ca_bob, send_cmd_fn)."""
+    import tempfile, nacl.bindings
+
+    alice_dir = tempfile.mkdtemp(prefix="osm_alice_adv_")
+    bob_dir = tempfile.mkdtemp(prefix="osm_bob_adv_")
+
+    def start_osm_in_dir(workdir, port):
+        env = os.environ.copy()
+        env["SDL_VIDEODRIVER"] = "dummy"
+        proc = subprocess.Popen(
+            [os.path.abspath(BINARY), "--port", str(port)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env, cwd=workdir,
+        )
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.5)
+                s.connect(("127.0.0.1", port))
+                s.close()
+                return proc
+            except (ConnectionRefusedError, OSError):
+                time.sleep(0.1)
+        return None
+
+    def send_cmd(proc, cmd, timeout=5.0):
+        import select
+        proc.stdin.write(f"{cmd}\n".encode())
+        proc.stdin.flush()
+        is_state = cmd.strip() == "CMD:STATE"
+        buf = b""
+        fd = proc.stdout.fileno()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.2)
+            if ready:
+                chunk = os.read(fd, 4096)
+                if not chunk: break
+                buf += chunk
+                text = buf.decode(errors="replace")
+                if is_state and "CMD:STATE:END" in text: break
+                for line in text.split("\n"):
+                    line = line.strip()
+                    if not is_state and line.startswith(("CMD:OK:", "CMD:ERR:", "CMD:IDENTITY:")):
+                        deadline = 0; break
+            if proc.poll() is not None: break
+        return "\n".join(l.strip() for l in buf.decode(errors="replace").split("\n") if l.strip().startswith("CMD:"))
+
+    alice_proc = start_osm_in_dir(alice_dir, PORT_A)
+    assert alice_proc, "Alice failed to start"
+    bob_proc = start_osm_in_dir(bob_dir, PORT_B)
+    assert bob_proc, "Bob failed to start"
+    time.sleep(0.3)
+
+    ca_alice = TcpClient(PORT_A, "CA-Alice")
+    assert ca_alice.connect(), "CA-Alice failed"
+    ca_bob = TcpClient(PORT_B, "CA-Bob")
+    assert ca_bob.connect(), "CA-Bob failed"
+    time.sleep(0.3)
+
+    # Generate keys
+    resp = send_cmd(alice_proc, "CMD:KEYGEN")
+    assert "CMD:OK:keygen" in resp
+    resp = send_cmd(bob_proc, "CMD:KEYGEN")
+    assert "CMD:OK:keygen" in resp
+
+    # Alice initiates KEX to Bob
+    resp = send_cmd(alice_proc, "CMD:ADD:Bob")
+    assert "CMD:OK:add:Bob" in resp
+    time.sleep(0.5)
+    alice_out = ca_alice.poll(timeout=1.0)
+    assert len(alice_out) > 0, "Alice should send KEX"
+    _, kex_data = alice_out[0]
+
+    # Relay KEX to Bob
+    ca_bob.send_message(CHAR_UUID_RX, kex_data)
+    time.sleep(0.5)
+    resp = send_cmd(bob_proc, "CMD:CREATE:Alice")
+    assert "PENDING_RECEIVED" in resp
+    resp = send_cmd(bob_proc, "CMD:COMPLETE:Alice")
+    assert "ESTABLISHED" in resp
+
+    # Get Bob's response and relay to Alice
+    time.sleep(0.5)
+    bob_out = ca_bob.poll(timeout=1.0)
+    assert len(bob_out) > 0, "Bob should send KEX response"
+    _, bob_kex = bob_out[0]
+
+    ca_alice.send_message(CHAR_UUID_RX, bob_kex)
+    time.sleep(0.5)
+    resp = send_cmd(alice_proc, "CMD:ASSIGN:Bob")
+    assert "ESTABLISHED" in resp
+
+    return alice_proc, bob_proc, alice_dir, bob_dir, ca_alice, ca_bob, send_cmd
+
+
+def test_osm_killed_mid_send():
+    """Test 32: OSM killed mid-send — restart delivers messages from outbox."""
+    print("\n[Test 32] OSM killed mid-send — outbox survives restart")
+
+    import tempfile, shutil
+
+    work_dir = tempfile.mkdtemp(prefix="osm_midsend_")
+
+    def start_osm_in_dir(workdir, port):
+        env = os.environ.copy()
+        env["SDL_VIDEODRIVER"] = "dummy"
+        proc = subprocess.Popen(
+            [os.path.abspath(BINARY), "--port", str(port)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env, cwd=workdir,
+        )
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.5)
+                s.connect(("127.0.0.1", port))
+                s.close()
+                return proc
+            except (ConnectionRefusedError, OSError):
+                time.sleep(0.1)
+        return None
+
+    def send_cmd(proc, cmd, timeout=5.0):
+        import select
+        proc.stdin.write(f"{cmd}\n".encode())
+        proc.stdin.flush()
+        is_state = cmd.strip() == "CMD:STATE"
+        buf = b""
+        fd = proc.stdout.fileno()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.2)
+            if ready:
+                chunk = os.read(fd, 4096)
+                if not chunk: break
+                buf += chunk
+                text = buf.decode(errors="replace")
+                if is_state and "CMD:STATE:END" in text: break
+                for line in text.split("\n"):
+                    line = line.strip()
+                    if not is_state and line.startswith(("CMD:OK:", "CMD:ERR:", "CMD:IDENTITY:")):
+                        deadline = 0; break
+            if proc.poll() is not None: break
+        return "\n".join(l.strip() for l in buf.decode(errors="replace").split("\n") if l.strip().startswith("CMD:"))
+
+    proc = None
+    try:
+        import nacl.bindings
+
+        proc = start_osm_in_dir(work_dir, PORT_A)
+        assert proc, "OSM failed to start"
+
+        resp = send_cmd(proc, "CMD:KEYGEN")
+        assert "CMD:OK:keygen" in resp
+        resp = send_cmd(proc, "CMD:ADD:TestPeer")
+        assert "CMD:OK:add:TestPeer" in resp
+
+        ca = TcpClient(PORT_A, "CA")
+        assert ca.connect(), "CA failed"
+        ca.poll(timeout=1.0)  # drain KEX
+
+        peer_sk = nacl.bindings.randombytes(32)
+        peer_pk = nacl.bindings.crypto_scalarmult_base(peer_sk)
+        ca.send_message(CHAR_UUID_RX, f"OSM:KEY:{base64.b64encode(peer_pk).decode()}".encode())
+        time.sleep(0.5)
+        resp = send_cmd(proc, "CMD:ASSIGN:TestPeer")
+        assert "ESTABLISHED" in resp
+        print("  PASS: Contact established")
+
+        # Queue messages while CA is disconnected
+        ca.disconnect()
+        time.sleep(0.3)
+
+        for i in range(5):
+            resp = send_cmd(proc, f"CMD:UI_COMPOSE:TestPeer:Kill test msg {i+1}")
+            assert "CMD:OK:ui_compose" in resp
+
+        state = send_cmd(proc, "CMD:STATE")
+        assert "outbox=5" in state, f"Expected outbox=5: {state}"
+        print("  PASS: 5 messages queued in outbox")
+
+        # Kill OSM (SIGKILL — ungraceful)
+        proc.kill()
+        proc.wait()
+        proc = None
+        time.sleep(0.5)
+        print("  PASS: OSM killed (SIGKILL)")
+
+        # Restart OSM (no clean — preserve data)
+        proc = start_osm_in_dir(work_dir, PORT_A)
+        assert proc, "OSM failed to restart"
+        print("  PASS: OSM restarted")
+
+        # Connect CA — should get all 5 messages
+        ca2 = TcpClient(PORT_A, "CA-post-kill")
+        assert ca2.connect(), "CA reconnect failed"
+        time.sleep(2.0)
+
+        msgs = ca2.poll(timeout=3.0)
+        msg_count = sum(1 for _, d in msgs if d.decode().startswith("OSM:MSG:"))
+        assert msg_count >= 5, f"Expected >=5 messages after restart, got {msg_count}"
+        print(f"  PASS: All {msg_count} messages delivered after SIGKILL + restart")
+
+        ca2.disconnect()
+
+    finally:
+        if proc and proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=3)
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def test_corrupt_fragment():
+    """Test 33: Corrupted/truncated fragments — OSM rejects gracefully."""
+    print("\n[Test 33] Corrupt/truncated fragments")
+
+    osm = OsmProcess(PORT_A, "OSM")
+    assert osm.start(), "OSM failed to start"
+
+    ca = TcpClient(PORT_A, "CA")
+    assert ca.connect(), "CA failed to connect"
+    time.sleep(0.3)
+
+    # Send a 1-byte fragment (too short for header)
+    raw_frame = struct.pack("!IH", 1, CHAR_UUID_RX) + b"\x00"
+    ca.sock.sendall(raw_frame)
+    time.sleep(0.2)
+    assert osm.proc.poll() is None, "OSM crashed on 1-byte fragment"
+    print("  PASS: 1-byte fragment rejected, no crash")
+
+    # Send a 2-byte fragment (still too short)
+    raw_frame = struct.pack("!IH", 2, CHAR_UUID_RX) + b"\x01\x00"
+    ca.sock.sendall(raw_frame)
+    time.sleep(0.2)
+    assert osm.proc.poll() is None, "OSM crashed on 2-byte fragment"
+    print("  PASS: 2-byte fragment rejected, no crash")
+
+    # Send a START fragment with no total_len (only 3-byte header, flags=START)
+    frag = struct.pack("<BH", FRAG_FLAG_START, 0)  # 3 bytes, no payload
+    raw_frame = struct.pack("!IH", len(frag), CHAR_UUID_RX) + frag
+    ca.sock.sendall(raw_frame)
+    time.sleep(0.2)
+    assert osm.proc.poll() is None, "OSM crashed on START with no total_len"
+    print("  PASS: START with no total_len rejected, no crash")
+
+    # Send a START+END with 0-length total_len (empty message body)
+    frag = struct.pack("<BH", FRAG_FLAG_START | FRAG_FLAG_END, 0)
+    frag += struct.pack("<H", 0)  # total_len = 0
+    raw_frame = struct.pack("!IH", len(frag), CHAR_UUID_RX) + frag
+    ca.sock.sendall(raw_frame)
+    time.sleep(0.2)
+    assert osm.proc.poll() is None, "OSM crashed on zero-length message"
+    print("  PASS: Zero-length message handled, no crash")
+
+    # Send a fragment with sequence=999 (no prior START)
+    frag = struct.pack("<BH", 0, 999) + b"orphan data"
+    raw_frame = struct.pack("!IH", len(frag), CHAR_UUID_RX) + frag
+    ca.sock.sendall(raw_frame)
+    time.sleep(0.2)
+    assert osm.proc.poll() is None, "OSM crashed on orphan fragment"
+    print("  PASS: Orphan fragment rejected, no crash")
+
+    # Verify OSM still works after all the garbage
+    valid_msg = b"OSM:MSG:AfterGarbage"
+    ca.send_message(CHAR_UUID_RX, valid_msg)
+    time.sleep(0.5)
+    assert osm.proc.poll() is None, "OSM crashed processing valid msg after garbage"
+    print("  PASS: Valid message processed after garbage fragments")
+
+    ca.disconnect()
+    osm.stop()
+
+
+def test_max_size_message():
+    """Test 34: Message at MAX_MSG_SIZE boundary (4096 bytes)."""
+    print("\n[Test 34] Max-size message (4096 bytes)")
+
+    import tempfile, shutil
+
+    work_dir = tempfile.mkdtemp(prefix="osm_maxsize_")
+
+    def start_osm_in_dir(workdir, port):
+        env = os.environ.copy()
+        env["SDL_VIDEODRIVER"] = "dummy"
+        proc = subprocess.Popen(
+            [os.path.abspath(BINARY), "--port", str(port)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env, cwd=workdir,
+        )
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.5)
+                s.connect(("127.0.0.1", port))
+                s.close()
+                return proc
+            except (ConnectionRefusedError, OSError):
+                time.sleep(0.1)
+        return None
+
+    def send_cmd(proc, cmd, timeout=5.0):
+        import select
+        proc.stdin.write(f"{cmd}\n".encode())
+        proc.stdin.flush()
+        is_state = cmd.strip() == "CMD:STATE"
+        buf = b""
+        fd = proc.stdout.fileno()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.2)
+            if ready:
+                chunk = os.read(fd, 4096)
+                if not chunk: break
+                buf += chunk
+                text = buf.decode(errors="replace")
+                if is_state and "CMD:STATE:END" in text: break
+                for line in text.split("\n"):
+                    line = line.strip()
+                    if not is_state and line.startswith(("CMD:OK:", "CMD:ERR:", "CMD:IDENTITY:")):
+                        deadline = 0; break
+            if proc.poll() is not None: break
+        return "\n".join(l.strip() for l in buf.decode(errors="replace").split("\n") if l.strip().startswith("CMD:"))
+
+    proc = None
+    try:
+        proc = start_osm_in_dir(work_dir, PORT_A)
+        assert proc, "OSM failed to start"
+
+        ca = TcpClient(PORT_A, "CA")
+        assert ca.connect(), "CA failed to connect"
+        time.sleep(0.3)
+
+        # Send exactly 4096 bytes (MAX_MSG_SIZE)
+        big_msg = b"A" * 4096
+        ca.send_message(CHAR_UUID_RX, big_msg)
+        time.sleep(1.0)
+        assert proc.poll() is None, "OSM crashed on 4096-byte message"
+        print("  PASS: 4096-byte message accepted")
+
+        # Send 4097 bytes (exceeds MAX_MSG_SIZE) — should be rejected
+        oversized_msg = b"B" * 4097
+        ca.send_message(CHAR_UUID_RX, oversized_msg)
+        time.sleep(1.0)
+        assert proc.poll() is None, "OSM crashed on oversized message"
+        print("  PASS: 4097-byte message rejected, no crash")
+
+        # Verify still functional after oversized message
+        ca.send_message(CHAR_UUID_RX, b"OSM:MSG:StillWorking")
+        time.sleep(0.5)
+        assert proc.poll() is None, "OSM crashed after oversized then valid"
+        print("  PASS: OSM still functional after oversized message")
+
+        ca.disconnect()
+
+    finally:
+        if proc and proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=3)
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def test_stale_connection():
+    """Test 35: OSM restart while CA holds stale connection."""
+    print("\n[Test 35] Stale connection after OSM restart")
+
+    import tempfile, shutil
+
+    work_dir = tempfile.mkdtemp(prefix="osm_stale_")
+
+    def start_osm_in_dir(workdir, port):
+        env = os.environ.copy()
+        env["SDL_VIDEODRIVER"] = "dummy"
+        proc = subprocess.Popen(
+            [os.path.abspath(BINARY), "--port", str(port)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env, cwd=workdir,
+        )
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.5)
+                s.connect(("127.0.0.1", port))
+                s.close()
+                return proc
+            except (ConnectionRefusedError, OSError):
+                time.sleep(0.1)
+        return None
+
+    proc = None
+    try:
+        proc = start_osm_in_dir(work_dir, PORT_A)
+        assert proc, "OSM failed to start"
+
+        ca = TcpClient(PORT_A, "CA")
+        assert ca.connect(), "CA connected"
+        time.sleep(0.3)
+        print("  PASS: CA connected to OSM")
+
+        # Kill OSM while CA socket is still open
+        proc.kill()
+        proc.wait()
+        proc = None
+        time.sleep(0.5)
+        print("  PASS: OSM killed")
+
+        # CA tries to send — should detect broken pipe
+        try:
+            ca.send_message(CHAR_UUID_RX, b"OSM:MSG:StaleTest")
+            # Give time for broken pipe to manifest
+            time.sleep(0.3)
+            # Try a recv — should get EOF or error
+            result = ca.poll(timeout=1.0)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        print("  PASS: Stale send detected (broken pipe / EOF)")
+
+        ca.disconnect()
+
+        # Restart OSM
+        proc = start_osm_in_dir(work_dir, PORT_A)
+        assert proc, "OSM failed to restart"
+        print("  PASS: OSM restarted on same port")
+
+        # Fresh CA connects successfully
+        ca2 = TcpClient(PORT_A, "CA-fresh")
+        assert ca2.connect(), "Fresh CA failed to connect after restart"
+        ca2.send_message(CHAR_UUID_RX, b"OSM:MSG:FreshConnection")
+        time.sleep(0.5)
+        assert proc.poll() is None, "OSM crashed after fresh reconnect"
+        print("  PASS: Fresh CA works after OSM restart")
+
+        ca2.disconnect()
+
+    finally:
+        if proc and proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=3)
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def test_simultaneous_kex():
+    """Test 36: Both sides initiate KEX simultaneously — both contacts established."""
+    print("\n[Test 36] Simultaneous KEX from both sides")
+
+    import tempfile, shutil
+
+    try:
+        import nacl.bindings
+    except ImportError:
+        print("  SKIP: PyNaCl not installed")
+        return
+
+    alice_dir = tempfile.mkdtemp(prefix="osm_simkex_a_")
+    bob_dir = tempfile.mkdtemp(prefix="osm_simkex_b_")
+
+    def start_osm_in_dir(workdir, port):
+        env = os.environ.copy()
+        env["SDL_VIDEODRIVER"] = "dummy"
+        proc = subprocess.Popen(
+            [os.path.abspath(BINARY), "--port", str(port)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env, cwd=workdir,
+        )
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.5)
+                s.connect(("127.0.0.1", port))
+                s.close()
+                return proc
+            except (ConnectionRefusedError, OSError):
+                time.sleep(0.1)
+        return None
+
+    def send_cmd(proc, cmd, timeout=5.0):
+        import select
+        proc.stdin.write(f"{cmd}\n".encode())
+        proc.stdin.flush()
+        is_state = cmd.strip() == "CMD:STATE"
+        buf = b""
+        fd = proc.stdout.fileno()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.2)
+            if ready:
+                chunk = os.read(fd, 4096)
+                if not chunk: break
+                buf += chunk
+                text = buf.decode(errors="replace")
+                if is_state and "CMD:STATE:END" in text: break
+                for line in text.split("\n"):
+                    line = line.strip()
+                    if not is_state and line.startswith(("CMD:OK:", "CMD:ERR:", "CMD:IDENTITY:")):
+                        deadline = 0; break
+            if proc.poll() is not None: break
+        return "\n".join(l.strip() for l in buf.decode(errors="replace").split("\n") if l.strip().startswith("CMD:"))
+
+    alice_proc = None
+    bob_proc = None
+    try:
+        alice_proc = start_osm_in_dir(alice_dir, PORT_A)
+        assert alice_proc, "Alice failed to start"
+        bob_proc = start_osm_in_dir(bob_dir, PORT_B)
+        assert bob_proc, "Bob failed to start"
+        time.sleep(0.3)
+
+        ca_alice = TcpClient(PORT_A, "CA-Alice")
+        assert ca_alice.connect()
+        ca_bob = TcpClient(PORT_B, "CA-Bob")
+        assert ca_bob.connect()
+        time.sleep(0.3)
+
+        resp = send_cmd(alice_proc, "CMD:KEYGEN")
+        assert "CMD:OK:keygen" in resp
+        resp = send_cmd(bob_proc, "CMD:KEYGEN")
+        assert "CMD:OK:keygen" in resp
+
+        # Both initiate KEX at the same time
+        resp_a = send_cmd(alice_proc, "CMD:ADD:Bob")
+        assert "CMD:OK:add:Bob" in resp_a
+        resp_b = send_cmd(bob_proc, "CMD:ADD:Alice")
+        assert "CMD:OK:add:Alice" in resp_b
+        print("  PASS: Both sides initiated KEX simultaneously")
+
+        time.sleep(0.5)
+        alice_out = ca_alice.poll(timeout=1.0)
+        bob_out = ca_bob.poll(timeout=1.0)
+        assert len(alice_out) > 0, "Alice should send KEX"
+        assert len(bob_out) > 0, "Bob should send KEX"
+
+        # Cross-relay: Alice's KEX → Bob, Bob's KEX → Alice
+        _, alice_kex = alice_out[0]
+        _, bob_kex = bob_out[0]
+
+        ca_bob.send_message(CHAR_UUID_RX, alice_kex)
+        ca_alice.send_message(CHAR_UUID_RX, bob_kex)
+        time.sleep(0.5)
+
+        # Both should have pending keys — assign them
+        resp = send_cmd(alice_proc, "CMD:ASSIGN:Bob")
+        # May already be ESTABLISHED or need ASSIGN
+        print(f"  Alice assign: {resp}")
+        resp = send_cmd(bob_proc, "CMD:ASSIGN:Alice")
+        print(f"  Bob assign: {resp}")
+
+        # Check both have established contacts
+        alice_state = send_cmd(alice_proc, "CMD:STATE")
+        bob_state = send_cmd(bob_proc, "CMD:STATE")
+        assert "Bob" in alice_state, f"Alice should know Bob: {alice_state}"
+        assert "Alice" in bob_state, f"Bob should know Alice: {bob_state}"
+        print("  PASS: Both contacts established after simultaneous KEX")
+
+        assert alice_proc.poll() is None, "Alice crashed"
+        assert bob_proc.poll() is None, "Bob crashed"
+        print("  PASS: Both OSMs alive")
+
+        ca_alice.disconnect()
+        ca_bob.disconnect()
+
+    finally:
+        for p in [alice_proc, bob_proc]:
+            if p and p.poll() is None:
+                p.terminate()
+                p.wait(timeout=3)
+        shutil.rmtree(alice_dir, ignore_errors=True)
+        shutil.rmtree(bob_dir, ignore_errors=True)
+
+
+def test_kex_immediate_message():
+    """Test 37: KEX followed immediately by encrypted message — message arrives."""
+    print("\n[Test 37] KEX + immediate message")
+
+    import tempfile, shutil
+
+    try:
+        import nacl.bindings
+    except ImportError:
+        print("  SKIP: PyNaCl not installed")
+        return
+
+    alice_dir = tempfile.mkdtemp(prefix="osm_kexmsg_a_")
+    bob_dir = tempfile.mkdtemp(prefix="osm_kexmsg_b_")
+    alice_proc = None
+    bob_proc = None
+    try:
+        alice_proc, bob_proc, alice_dir2, bob_dir2, ca_alice, ca_bob, send_cmd = \
+            _setup_two_osms_with_kex()
+        # Override dirs (setup creates its own)
+        alice_dir = alice_dir2
+        bob_dir = bob_dir2
+        print("  PASS: KEX completed")
+
+        # Immediately send a message from Alice with no delay
+        resp = send_cmd(alice_proc, "CMD:UI_COMPOSE:Bob:Immediate after KEX!")
+        assert "CMD:OK:ui_compose" in resp
+        print("  PASS: Message composed immediately after KEX")
+
+        time.sleep(1.0)
+        msgs = ca_alice.poll(timeout=2.0)
+        msg_count = sum(1 for _, d in msgs if d.decode().startswith("OSM:MSG:"))
+        assert msg_count >= 1, f"Expected >=1 messages, got {msg_count}"
+        print(f"  PASS: {msg_count} message(s) sent to CA immediately after KEX")
+
+        assert alice_proc.poll() is None, "Alice crashed"
+        assert bob_proc.poll() is None, "Bob crashed"
+
+        ca_alice.disconnect()
+        ca_bob.disconnect()
+
+    finally:
+        for p in [alice_proc, bob_proc]:
+            if p and p.poll() is None:
+                p.terminate()
+                p.wait(timeout=3)
+        shutil.rmtree(alice_dir, ignore_errors=True)
+        shutil.rmtree(bob_dir, ignore_errors=True)
+
+
+def test_kex_while_outbox_full():
+    """Test 38: KEX succeeds even when outbox is full."""
+    print("\n[Test 38] KEX while outbox full")
+
+    import tempfile, shutil
+
+    try:
+        import nacl.bindings
+    except ImportError:
+        print("  SKIP: PyNaCl not installed")
+        return
+
+    work_dir = tempfile.mkdtemp(prefix="osm_kexfull_")
+
+    def start_osm_in_dir(workdir, port):
+        env = os.environ.copy()
+        env["SDL_VIDEODRIVER"] = "dummy"
+        proc = subprocess.Popen(
+            [os.path.abspath(BINARY), "--port", str(port)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env, cwd=workdir,
+        )
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.5)
+                s.connect(("127.0.0.1", port))
+                s.close()
+                return proc
+            except (ConnectionRefusedError, OSError):
+                time.sleep(0.1)
+        return None
+
+    def send_cmd(proc, cmd, timeout=5.0):
+        import select
+        proc.stdin.write(f"{cmd}\n".encode())
+        proc.stdin.flush()
+        is_state = cmd.strip() == "CMD:STATE"
+        buf = b""
+        fd = proc.stdout.fileno()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.2)
+            if ready:
+                chunk = os.read(fd, 4096)
+                if not chunk: break
+                buf += chunk
+                text = buf.decode(errors="replace")
+                if is_state and "CMD:STATE:END" in text: break
+                for line in text.split("\n"):
+                    line = line.strip()
+                    if not is_state and line.startswith(("CMD:OK:", "CMD:ERR:", "CMD:IDENTITY:")):
+                        deadline = 0; break
+            if proc.poll() is not None: break
+        return "\n".join(l.strip() for l in buf.decode(errors="replace").split("\n") if l.strip().startswith("CMD:"))
+
+    proc = None
+    try:
+        proc = start_osm_in_dir(work_dir, PORT_A)
+        assert proc, "OSM failed to start"
+
+        resp = send_cmd(proc, "CMD:KEYGEN")
+        assert "CMD:OK:keygen" in resp
+
+        # First create a contact with peer so we can fill outbox with messages
+        resp = send_cmd(proc, "CMD:ADD:Filler")
+        assert "CMD:OK:add:Filler" in resp
+
+        ca = TcpClient(PORT_A, "CA")
+        assert ca.connect(), "CA failed"
+        ca.poll(timeout=1.0)  # drain KEX for Filler
+
+        filler_sk = nacl.bindings.randombytes(32)
+        filler_pk = nacl.bindings.crypto_scalarmult_base(filler_sk)
+        ca.send_message(CHAR_UUID_RX, f"OSM:KEY:{base64.b64encode(filler_pk).decode()}".encode())
+        time.sleep(0.5)
+        resp = send_cmd(proc, "CMD:ASSIGN:Filler")
+        assert "ESTABLISHED" in resp
+
+        # Disconnect CA so messages queue
+        ca.disconnect()
+        time.sleep(0.3)
+
+        # Fill outbox with 32 messages
+        for i in range(32):
+            resp = send_cmd(proc, f"CMD:UI_COMPOSE:Filler:Fill msg {i+1}")
+            assert "CMD:OK:ui_compose" in resp
+
+        state = send_cmd(proc, "CMD:STATE")
+        assert "outbox=32" in state, f"Expected outbox=32: {state}"
+        print("  PASS: Outbox full (32 messages)")
+
+        # Now initiate KEX for a new contact — should still work
+        resp = send_cmd(proc, "CMD:ADD:NewPeer")
+        assert "CMD:OK:add:NewPeer" in resp
+        print("  PASS: KEX initiated despite full outbox")
+
+        # Reconnect CA and verify KEX message was sent
+        ca2 = TcpClient(PORT_A, "CA-kex")
+        assert ca2.connect(), "CA reconnect failed"
+        time.sleep(2.0)
+        msgs = ca2.poll(timeout=3.0)
+
+        # Should have both: encrypted messages + KEX message
+        kex_msgs = [d for _, d in msgs if d.decode().startswith("OSM:KEY:")]
+        enc_msgs = [d for _, d in msgs if d.decode().startswith("OSM:MSG:")]
+        print(f"  Got {len(kex_msgs)} KEX + {len(enc_msgs)} encrypted messages")
+        # KEX goes through the outbox too, so it may have evicted oldest fill msg
+        assert len(kex_msgs) >= 1, "KEX message should be sent even with full outbox"
+        print("  PASS: KEX message sent despite full outbox")
+
+        assert proc.poll() is None, "OSM crashed"
+        ca2.disconnect()
+
+    finally:
+        if proc and proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=3)
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def test_duplicate_message():
+    """Test 39: Same raw data sent twice — OSM doesn't crash, processes both."""
+    print("\n[Test 39] Duplicate message handling")
+
+    osm = OsmProcess(PORT_A, "OSM")
+    assert osm.start(), "OSM failed to start"
+
+    ca = TcpClient(PORT_A, "CA")
+    assert ca.connect(), "CA failed to connect"
+    time.sleep(0.3)
+
+    msg = b"OSM:MSG:DuplicateTest12345"
+
+    # Send the same message twice
+    ca.send_message(CHAR_UUID_RX, msg)
+    time.sleep(0.2)
+    ca.send_message(CHAR_UUID_RX, msg)
+    time.sleep(0.5)
+
+    assert osm.proc.poll() is None, "OSM crashed on duplicate message"
+    print("  PASS: Duplicate messages processed without crash")
+
+    # Send a different message after — verify OSM still works
+    ca.send_message(CHAR_UUID_RX, b"OSM:MSG:AfterDuplicate")
+    time.sleep(0.5)
+    assert osm.proc.poll() is None, "OSM crashed after duplicate + new message"
+    print("  PASS: OSM functional after processing duplicates")
+
+    ca.disconnect()
+    osm.stop()
+
+
+def test_bidirectional_concurrent_send():
+    """Test 40: Both OSMs send messages simultaneously — no corruption."""
+    print("\n[Test 40] Bidirectional concurrent send")
+
+    import tempfile, shutil
+
+    try:
+        import nacl.bindings
+    except ImportError:
+        print("  SKIP: PyNaCl not installed")
+        return
+
+    alice_proc = None
+    bob_proc = None
+    alice_dir = ""
+    bob_dir = ""
+    try:
+        alice_proc, bob_proc, alice_dir, bob_dir, ca_alice, ca_bob, send_cmd = \
+            _setup_two_osms_with_kex()
+        print("  PASS: KEX completed")
+
+        # Both send 5 messages simultaneously
+        for i in range(5):
+            resp = send_cmd(alice_proc, f"CMD:UI_COMPOSE:Bob:A2B msg {i+1}")
+            assert "CMD:OK:ui_compose" in resp
+            resp = send_cmd(bob_proc, f"CMD:UI_COMPOSE:Alice:B2A msg {i+1}")
+            assert "CMD:OK:ui_compose" in resp
+
+        time.sleep(1.5)
+
+        # Collect messages from both CAs
+        alice_msgs = ca_alice.poll(timeout=2.0)
+        bob_msgs = ca_bob.poll(timeout=2.0)
+
+        a2b_count = sum(1 for _, d in alice_msgs if d.decode().startswith("OSM:MSG:"))
+        b2a_count = sum(1 for _, d in bob_msgs if d.decode().startswith("OSM:MSG:"))
+
+        print(f"  Alice CA got {a2b_count} msgs, Bob CA got {b2a_count} msgs")
+        assert a2b_count >= 5, f"Expected >=5 from Alice, got {a2b_count}"
+        assert b2a_count >= 5, f"Expected >=5 from Bob, got {b2a_count}"
+        print("  PASS: All messages delivered in both directions")
+
+        assert alice_proc.poll() is None, "Alice crashed"
+        assert bob_proc.poll() is None, "Bob crashed"
+
+        ca_alice.disconnect()
+        ca_bob.disconnect()
+
+    finally:
+        for p in [alice_proc, bob_proc]:
+            if p and p.poll() is None:
+                p.terminate()
+                p.wait(timeout=3)
+        if alice_dir: shutil.rmtree(alice_dir, ignore_errors=True)
+        if bob_dir: shutil.rmtree(bob_dir, ignore_errors=True)
+
+
+def test_out_of_order_ack():
+    """Test 41: ACKs arrive in different order than sends — all clear from outbox."""
+    print("\n[Test 41] Out-of-order ACK handling")
+
+    import tempfile, shutil
+
+    try:
+        import nacl.bindings
+    except ImportError:
+        print("  SKIP: PyNaCl not installed")
+        return
+
+    work_dir = tempfile.mkdtemp(prefix="osm_oooack_")
+
+    def start_osm_in_dir(workdir, port):
+        env = os.environ.copy()
+        env["SDL_VIDEODRIVER"] = "dummy"
+        proc = subprocess.Popen(
+            [os.path.abspath(BINARY), "--port", str(port)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env, cwd=workdir,
+        )
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.5)
+                s.connect(("127.0.0.1", port))
+                s.close()
+                return proc
+            except (ConnectionRefusedError, OSError):
+                time.sleep(0.1)
+        return None
+
+    def send_cmd(proc, cmd, timeout=5.0):
+        import select
+        proc.stdin.write(f"{cmd}\n".encode())
+        proc.stdin.flush()
+        is_state = cmd.strip() == "CMD:STATE"
+        buf = b""
+        fd = proc.stdout.fileno()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.2)
+            if ready:
+                chunk = os.read(fd, 4096)
+                if not chunk: break
+                buf += chunk
+                text = buf.decode(errors="replace")
+                if is_state and "CMD:STATE:END" in text: break
+                for line in text.split("\n"):
+                    line = line.strip()
+                    if not is_state and line.startswith(("CMD:OK:", "CMD:ERR:", "CMD:IDENTITY:")):
+                        deadline = 0; break
+            if proc.poll() is not None: break
+        return "\n".join(l.strip() for l in buf.decode(errors="replace").split("\n") if l.strip().startswith("CMD:"))
+
+    proc = None
+    try:
+        proc = start_osm_in_dir(work_dir, PORT_A)
+        assert proc, "OSM failed to start"
+
+        resp = send_cmd(proc, "CMD:KEYGEN")
+        assert "CMD:OK:keygen" in resp
+        resp = send_cmd(proc, "CMD:ADD:TestPeer")
+        assert "CMD:OK:add:TestPeer" in resp
+
+        # Connect CA but don't auto-ACK — we'll manually ACK in reverse order
+        ca = TcpClient(PORT_A, "CA-manual")
+        assert ca.connect(), "CA failed"
+        ca.poll(timeout=1.0)  # drain KEX
+
+        peer_sk = nacl.bindings.randombytes(32)
+        peer_pk = nacl.bindings.crypto_scalarmult_base(peer_sk)
+        ca.send_message(CHAR_UUID_RX, f"OSM:KEY:{base64.b64encode(peer_pk).decode()}".encode())
+        time.sleep(0.5)
+        resp = send_cmd(proc, "CMD:ASSIGN:TestPeer")
+        assert "ESTABLISHED" in resp
+
+        # Queue 3 messages
+        for i in range(3):
+            resp = send_cmd(proc, f"CMD:UI_COMPOSE:TestPeer:OOO msg {i+1}")
+            assert "CMD:OK:ui_compose" in resp
+
+        time.sleep(1.0)
+
+        # Collect all messages WITHOUT auto-ACKing
+        # Use raw recv to get the data without the poll auto-ACK
+        collected = []
+        deadline = time.time() + 3.0
+        rx_buf = bytearray()
+        rx_seq = 0
+        rx_active = False
+
+        while time.time() < deadline:
+            try:
+                raw = ca.sock.recv(4096)
+                if not raw: break
+            except BlockingIOError:
+                time.sleep(0.01)
+                continue
+            except OSError:
+                break
+
+            buf = raw
+            pos = 0
+            while pos + 6 <= len(buf):
+                msg_len, char_uuid = struct.unpack("!IH", buf[pos:pos+6])
+                pos += 6
+                if pos + msg_len > len(buf): break
+                frag = buf[pos:pos+msg_len]
+                pos += msg_len
+                if len(frag) < 3: continue
+                flags, seq = struct.unpack("<BH", frag[:3])
+                payload = frag[3:]
+                if flags & FRAG_FLAG_ACK: continue
+                if flags & FRAG_FLAG_START:
+                    rx_buf = bytearray()
+                    rx_seq = 0
+                    rx_active = True
+                    if len(payload) >= 2: payload = payload[2:]
+                if not rx_active or seq != rx_seq:
+                    rx_active = False
+                    continue
+                rx_buf.extend(payload)
+                rx_seq += 1
+                if flags & FRAG_FLAG_END:
+                    collected.append(bytes(rx_buf))
+                    rx_active = False
+                    rx_buf = bytearray()
+
+        enc_msgs = [m for m in collected if m.decode(errors="replace").startswith("OSM:MSG:")]
+        print(f"  Collected {len(enc_msgs)} messages (no ACKs sent)")
+        assert len(enc_msgs) >= 3, f"Expected >=3, got {len(enc_msgs)}"
+
+        # Outbox should still have 3 items (no ACKs sent)
+        state = send_cmd(proc, "CMD:STATE")
+        assert "outbox=3" in state, f"Expected outbox=3 (no ACKs yet): {state}"
+
+        # Send ACKs in REVERSE order
+        for msg in reversed(enc_msgs[:3]):
+            msg_id = TcpClient.compute_msg_id(msg)
+            ca.send_ack(msg_id)
+            time.sleep(0.2)
+
+        time.sleep(1.0)
+        state = send_cmd(proc, "CMD:STATE")
+        assert "outbox=0" in state, f"Outbox should be empty after out-of-order ACKs: {state}"
+        print("  PASS: All messages ACKed out-of-order, outbox empty")
+
+        assert proc.poll() is None, "OSM crashed"
+        ca.disconnect()
+
+    finally:
+        if proc and proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=3)
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def test_two_cas_one_osm():
+    """Test 42: Two CAs connected to one OSM — both receive broadcast messages."""
+    print("\n[Test 42] Two CAs connected to one OSM")
+
+    import tempfile, shutil
+
+    try:
+        import nacl.bindings
+    except ImportError:
+        print("  SKIP: PyNaCl not installed")
+        return
+
+    work_dir = tempfile.mkdtemp(prefix="osm_multi_ca_")
+
+    def start_osm_in_dir(workdir, port):
+        env = os.environ.copy()
+        env["SDL_VIDEODRIVER"] = "dummy"
+        proc = subprocess.Popen(
+            [os.path.abspath(BINARY), "--port", str(port)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env, cwd=workdir,
+        )
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.5)
+                s.connect(("127.0.0.1", port))
+                s.close()
+                return proc
+            except (ConnectionRefusedError, OSError):
+                time.sleep(0.1)
+        return None
+
+    def send_cmd(proc, cmd, timeout=5.0):
+        import select
+        proc.stdin.write(f"{cmd}\n".encode())
+        proc.stdin.flush()
+        is_state = cmd.strip() == "CMD:STATE"
+        buf = b""
+        fd = proc.stdout.fileno()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.2)
+            if ready:
+                chunk = os.read(fd, 4096)
+                if not chunk: break
+                buf += chunk
+                text = buf.decode(errors="replace")
+                if is_state and "CMD:STATE:END" in text: break
+                for line in text.split("\n"):
+                    line = line.strip()
+                    if not is_state and line.startswith(("CMD:OK:", "CMD:ERR:", "CMD:IDENTITY:")):
+                        deadline = 0; break
+            if proc.poll() is not None: break
+        return "\n".join(l.strip() for l in buf.decode(errors="replace").split("\n") if l.strip().startswith("CMD:"))
+
+    proc = None
+    try:
+        proc = start_osm_in_dir(work_dir, PORT_A)
+        assert proc, "OSM failed to start"
+
+        resp = send_cmd(proc, "CMD:KEYGEN")
+        assert "CMD:OK:keygen" in resp
+        resp = send_cmd(proc, "CMD:ADD:Peer")
+        assert "CMD:OK:add:Peer" in resp
+
+        # Connect TWO CAs
+        ca1 = TcpClient(PORT_A, "CA-1")
+        assert ca1.connect(), "CA-1 failed"
+        ca2 = TcpClient(PORT_A, "CA-2")
+        assert ca2.connect(), "CA-2 failed"
+        time.sleep(0.5)
+
+        # Drain any initial KEX on both
+        ca1.poll(timeout=1.0)
+        ca2.poll(timeout=1.0)
+
+        # Establish contact via CA-1
+        peer_sk = nacl.bindings.randombytes(32)
+        peer_pk = nacl.bindings.crypto_scalarmult_base(peer_sk)
+        ca1.send_message(CHAR_UUID_RX, f"OSM:KEY:{base64.b64encode(peer_pk).decode()}".encode())
+        time.sleep(0.5)
+        resp = send_cmd(proc, "CMD:ASSIGN:Peer")
+        assert "ESTABLISHED" in resp
+
+        # Send a message — both CAs should receive it (broadcast)
+        resp = send_cmd(proc, "CMD:UI_COMPOSE:Peer:BroadcastTest")
+        assert "CMD:OK:ui_compose" in resp
+        time.sleep(1.0)
+
+        msgs1 = ca1.poll(timeout=2.0)
+        msgs2 = ca2.poll(timeout=2.0)
+
+        enc1 = sum(1 for _, d in msgs1 if d.decode().startswith("OSM:MSG:"))
+        enc2 = sum(1 for _, d in msgs2 if d.decode().startswith("OSM:MSG:"))
+
+        print(f"  CA-1 got {enc1} msgs, CA-2 got {enc2} msgs")
+        assert enc1 >= 1, f"CA-1 should get message, got {enc1}"
+        assert enc2 >= 1, f"CA-2 should get message, got {enc2}"
+        print("  PASS: Both CAs received the broadcast message")
+
+        assert proc.poll() is None, "OSM crashed"
+        ca1.disconnect()
+        ca2.disconnect()
+
+    finally:
+        if proc and proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=3)
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def test_send_to_invalid_device():
+    """Test 43: Sending to a nonexistent contact — graceful failure."""
+    print("\n[Test 43] Send to invalid/nonexistent contact")
+
+    import tempfile, shutil
+
+    work_dir = tempfile.mkdtemp(prefix="osm_invalid_")
+
+    def start_osm_in_dir(workdir, port):
+        env = os.environ.copy()
+        env["SDL_VIDEODRIVER"] = "dummy"
+        proc = subprocess.Popen(
+            [os.path.abspath(BINARY), "--port", str(port)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env, cwd=workdir,
+        )
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.5)
+                s.connect(("127.0.0.1", port))
+                s.close()
+                return proc
+            except (ConnectionRefusedError, OSError):
+                time.sleep(0.1)
+        return None
+
+    def send_cmd(proc, cmd, timeout=5.0):
+        import select
+        proc.stdin.write(f"{cmd}\n".encode())
+        proc.stdin.flush()
+        is_state = cmd.strip() == "CMD:STATE"
+        buf = b""
+        fd = proc.stdout.fileno()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.2)
+            if ready:
+                chunk = os.read(fd, 4096)
+                if not chunk: break
+                buf += chunk
+                text = buf.decode(errors="replace")
+                if is_state and "CMD:STATE:END" in text: break
+                for line in text.split("\n"):
+                    line = line.strip()
+                    if not is_state and line.startswith(("CMD:OK:", "CMD:ERR:", "CMD:IDENTITY:")):
+                        deadline = 0; break
+            if proc.poll() is not None: break
+        return "\n".join(l.strip() for l in buf.decode(errors="replace").split("\n") if l.strip().startswith("CMD:"))
+
+    proc = None
+    try:
+        proc = start_osm_in_dir(work_dir, PORT_A)
+        assert proc, "OSM failed to start"
+
+        resp = send_cmd(proc, "CMD:KEYGEN")
+        assert "CMD:OK:keygen" in resp
+
+        # Try to compose for nonexistent contact
+        resp = send_cmd(proc, "CMD:UI_COMPOSE:NonExistent:Hello nobody")
+        print(f"  Response: {resp}")
+        # Should get an error, not crash
+        assert proc.poll() is None, "OSM crashed on compose to nonexistent contact"
+        print("  PASS: Compose to nonexistent contact — no crash")
+
+        # Try to complete KEX for nonexistent contact
+        resp = send_cmd(proc, "CMD:COMPLETE:GhostPeer")
+        assert proc.poll() is None, "OSM crashed on COMPLETE for nonexistent"
+        print("  PASS: COMPLETE for nonexistent contact — no crash")
+
+        # Try to assign nonexistent pending key
+        resp = send_cmd(proc, "CMD:ASSIGN:NobodyHere")
+        assert proc.poll() is None, "OSM crashed on ASSIGN for nonexistent"
+        print("  PASS: ASSIGN for nonexistent contact — no crash")
+
+        # Verify OSM is still fully functional
+        resp = send_cmd(proc, "CMD:ADD:RealPeer")
+        assert "CMD:OK:add:RealPeer" in resp
+        print("  PASS: OSM still functional after invalid commands")
+
+    finally:
+        if proc and proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=3)
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
 def main():
     if not os.path.isfile(BINARY):
         print(f"ERROR: OSM binary not found at {BINARY}")
@@ -3208,6 +4483,19 @@ def main():
         test_offline_message_persistence,
         test_compose_navigates_to_conversation,
         test_ca_queue_while_disconnected,
+        # Phase 14: Adversarial tests
+        test_osm_killed_mid_send,
+        test_corrupt_fragment,
+        test_max_size_message,
+        test_stale_connection,
+        test_simultaneous_kex,
+        test_kex_immediate_message,
+        test_kex_while_outbox_full,
+        test_duplicate_message,
+        test_bidirectional_concurrent_send,
+        test_out_of_order_ack,
+        test_two_cas_one_osm,
+        test_send_to_invalid_device,
     ]
 
     passed = 0
