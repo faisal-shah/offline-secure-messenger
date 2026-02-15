@@ -21,7 +21,7 @@ enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED }
 data class OsmDevice(
     val id: String,
     val name: String,
-    val port: Int,
+    val port: Int = 0,
     val state: ConnectionState = ConnectionState.DISCONNECTED,
     val inbox: List<CipherMessage> = emptyList(),
     val outbox: List<CipherMessage> = emptyList()

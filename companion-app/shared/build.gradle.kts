@@ -16,7 +16,13 @@ kotlin {
     jvm("desktop")
 
     if (androidEnabled) {
-        androidTarget()
+        androidTarget {
+            compilations.all {
+                kotlinOptions {
+                    jvmTarget = "17"
+                }
+            }
+        }
     }
 
     sourceSets {

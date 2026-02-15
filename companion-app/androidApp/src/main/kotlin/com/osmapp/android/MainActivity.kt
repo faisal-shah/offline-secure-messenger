@@ -9,6 +9,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import com.osmapp.data.FileStorage
 import com.osmapp.data.MessageStore
 import com.osmapp.model.*
@@ -25,7 +26,7 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { grants ->
         if (grants.values.all { it }) {
-            transport.startDiscovery()
+            lifecycleScope.launch { transport.startDiscovery() }
         }
     }
 
@@ -168,7 +169,7 @@ class MainActivity : ComponentActivity() {
             != PackageManager.PERMISSION_GRANTED) needed.add(Manifest.permission.ACCESS_FINE_LOCATION)
 
         if (needed.isEmpty()) {
-            transport.startDiscovery()
+            lifecycleScope.launch { transport.startDiscovery() }
         } else {
             permissionLauncher.launch(needed.toTypedArray())
         }
