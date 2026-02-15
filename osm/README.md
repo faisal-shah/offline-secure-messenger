@@ -38,9 +38,29 @@ stateDiagram-v2
 ## Encryption
 
 Uses **TweetNaCl** (X25519 + XSalsa20-Poly1305):
-- Keypair generated on first launch and persisted to `data_identity.json`
+- Keypair generated on first launch and persisted to LittleFS
 - Messages encrypted with `crypto_box()`, nonce prepended, base64-encoded
 - Decryption with `crypto_box_open()` — authentication failure rejects message
+
+## Persistent Storage
+
+All data is stored in a **LittleFS** filesystem image (`osm_data.img`):
+
+| File | Contents |
+|---|---|
+| `identity.json` | Public/private keypair |
+| `contacts.json` | Contact list with pubkeys and status |
+| `messages.json` | Message history |
+| `outbox.json` | Queued outbound ciphertext (delivered on CA connect) |
+| `pending_keys.json` | Incoming anonymous keys awaiting assignment |
+
+```bash
+# Clear all persistent data and start fresh
+rm osm_data.img
+```
+
+On first run, the image is auto-created (1 MB, auto-formatted).
+On the MCU target, LittleFS maps directly to SPI flash.
 
 ## Transport Layer
 
@@ -133,18 +153,30 @@ osm/
 ├── CMakeLists.txt
 ├── lv_conf.h               # LVGL compile-time settings
 ├── lvgl/                   # LVGL 9.4.0 (git submodule)
+├── littlefs/               # LittleFS filesystem (vendored)
+│   └── bd/                 # Block device backends (filebd, rambd)
 ├── src/
 │   ├── main.c              # Entry point, SDL window + input setup
 │   ├── app.h               # Types, constants, app state
 │   ├── app.c               # App lifecycle, navigation, test driver
 │   ├── crypto.h/c          # TweetNaCl encryption wrapper
 │   ├── tweetnacl.h/c       # TweetNaCl library (vendored)
+│   ├── hal/                # Platform Abstraction Layer
+│   │   ├── hal_storage.h   # LittleFS init/mount/get API
+│   │   ├── hal_storage_filebd.c  # Desktop: file-backed block device
+│   │   ├── hal_storage_util.h    # Read/write file helpers
+│   │   ├── hal_rng.h       # Random bytes API
+│   │   ├── hal_rng_posix.c # Desktop: /dev/urandom
+│   │   ├── hal_log.h       # Logging API
+│   │   └── hal_log_posix.c # Desktop: fprintf(stderr)
 │   ├── transport/
 │   │   ├── transport.h     # Abstract transport interface
-│   │   └── transport_tcp.c # TCP server (desktop simulator)
+│   │   ├── transport_common.c  # Fragmentation, reassembly, ACK
+│   │   ├── transport_tcp.c # TCP server (desktop simulator)
+│   │   └── transport_ble.c # BLE GATT server (BlueZ)
 │   ├── data/
-│   │   ├── contacts.h/c    # Contact CRUD + JSON persistence
-│   │   ├── messages.h/c    # Message CRUD + JSON persistence
+│   │   ├── contacts.h/c    # Contact CRUD + LittleFS persistence
+│   │   ├── messages.h/c    # Message CRUD + LittleFS persistence
 │   │   └── identity.h/c    # Keypair persistence
 │   └── screens/
 │       ├── scr_setup.h/c
@@ -161,12 +193,16 @@ osm/
 
 ## Technical Decisions
 
+- **LittleFS for persistence**: Unified storage layer that works on desktop
+  (file-backed) and MCU (SPI flash). Replaces loose JSON files.
+- **HAL abstraction**: `hal_storage`, `hal_rng`, `hal_log` keep platform-specific
+  code isolated. Desktop-only code guarded by `#ifndef OSM_MCU_BUILD`.
 - **Manual input group management**: `lv_group_set_default()` is avoided.
   Textareas are explicitly added to `dev_group` via `lv_group_add_obj()`.
 - **Display–indev binding**: `lv_indev_create()` binds to whichever display is
   default at creation time.
-- **C11, no external deps beyond SDL2**: Keeps the path to ESP32 deployment
-  short. JSON persistence is hand-rolled.
+- **C11, minimal deps**: SDL2 (desktop only) + LVGL + TweetNaCl + LittleFS.
+  Keeps the path to ESP32 deployment short.
 - **Dark theme**: bg `#1A1A2E`, header `#16213E`, primary `#00B0FF`,
   green `#00E676`, red `#FF1744`.
 

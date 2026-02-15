@@ -42,12 +42,18 @@ offline-secure-messenger/
 │   ├── CMakeLists.txt
 │   ├── lv_conf.h
 │   ├── lvgl/               # LVGL 9.4 (git submodule)
+│   ├── littlefs/           # LittleFS library (vendored)
+│   │   └── bd/             # Block device backends (filebd, rambd)
 │   ├── src/                # C source — LVGL UI, data, crypto, transport
+│   │   ├── hal/            # Platform Abstraction Layer (storage, rng, log)
+│   │   ├── data/           # Persistence (contacts, messages, identity)
+│   │   ├── transport/      # TCP / BLE transport backends
+│   │   └── screens/        # LVGL screen implementations
 │   └── tests/
 ├── companion-app/          # Companion App (Kotlin Multiplatform + Compose)
 │   ├── shared/             # Common code (model, transport, UI)
 │   └── desktopApp/         # Desktop entry point
-├── tests/                  # Integration tests (E2E TCP + BLE)
+├── tests/                  # Integration tests (43 E2E tests)
 ├── AGENTS.md               # AI assistant context (architecture, build, test)
 ├── LICENSE
 └── README.md               # This file
@@ -97,7 +103,7 @@ cd osm
 mkdir -p build && cd build
 cmake .. && make -j$(nproc)
 ./secure_communicator              # Interactive mode (port 19200)
-./secure_communicator --test       # Automated tests (69 tests)
+./secure_communicator --test       # Automated tests (69 built-in tests)
 
 # Build OSM with BLE transport (optional)
 mkdir -p ../build_ble && cd ../build_ble
@@ -108,6 +114,52 @@ sudo ./secure_communicator         # Needs root for BlueZ D-Bus
 cd companion-app
 ./gradlew :desktopApp:run
 ```
+
+## E2E Integration Tests
+
+The 43 end-to-end tests exercise the full OSM↔CA protocol over TCP: key
+exchange, encrypted messaging, outbox persistence, reconnection, adversarial
+scenarios, and more.
+
+```bash
+# Build OSM first
+cd osm/build && cmake .. && make -j$(nproc) && cd ../..
+
+# Run all tests (headless)
+SDL_VIDEODRIVER=dummy python3 -m pytest tests/e2e_test.py -v
+
+# Run a single test
+SDL_VIDEODRIVER=dummy python3 -m pytest tests/e2e_test.py::test_full_kex_and_multi_message -v
+```
+
+**Requirements**: Python 3.10+, `pytest`, `pynacl` (for crypto tests).
+
+```bash
+pip install pytest pynacl
+```
+
+## Persistent Storage
+
+All OSM data (identity, contacts, messages, outbox, pending keys) is stored
+inside a **LittleFS** filesystem image (`osm_data.img`). On the desktop
+simulator this is backed by a regular file; on the MCU target it maps to SPI
+flash.
+
+```bash
+# Clear all persistent data and start fresh
+rm osm_data.img
+
+# The file is auto-created on first run (1 MB, formatted automatically)
+```
+
+The storage layer is abstracted behind a **Platform Abstraction Layer (HAL)**
+so the same application code runs on both desktop and MCU:
+
+| HAL Module | Desktop Implementation | MCU Implementation |
+|---|---|---|
+| `hal_storage` | `lfs_filebd` (file-backed) | SPI flash driver |
+| `hal_rng` | `/dev/urandom` | Hardware TRNG |
+| `hal_log` | `fprintf(stderr)` | UART / RTT |
 
 ## Prerequisites
 

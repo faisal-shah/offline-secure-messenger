@@ -4,6 +4,10 @@ osm/data_contacts.json
 osm/data_messages.json
 osm/data_identity.json
 
+# LittleFS storage image (generated at runtime)
+osm_data.img
+osm/osm_data.img
+
 # Companion App
 companion-app/.gradle/
 companion-app/build/
@@ -14,6 +18,7 @@ __pycache__/
 tests/data_*.json
 data_contacts.json
 data_identity.json
+data_messages.json
 data_pending_keys.json
 data_outbox.json
 tags

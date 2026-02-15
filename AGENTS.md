@@ -115,12 +115,26 @@ cd companion-app
 cd osm/build && ./secure_communicator --test
 ```
 
+69 automated tests: screens, navigation, input, CRUD, crypto, transport.
+
 ### E2E integration tests (TCP transport)
 
 ```bash
 cd osm/build && cmake .. && make -j$(nproc)
 cd ../..
-python3 tests/e2e_test.py
+SDL_VIDEODRIVER=dummy python3 -m pytest tests/e2e_test.py -v
+```
+
+43 tests: full KEX flows, encrypted messaging, outbox persistence, reconnection,
+adversarial scenarios (disconnect, restart, overflow, corrupt fragments).
+
+Requires: `pytest`, `pynacl` (`pip install pytest pynacl`).
+
+### Clearing persistent data
+
+```bash
+rm osm_data.img          # from repo root (or wherever OSM runs)
+rm /tmp/osm_*/osm_data.img  # test temp dirs (auto-cleaned)
 ```
 
 ### BLE integration tests
@@ -141,6 +155,29 @@ Tests skip gracefully if no BLE adapter is available.
 
 - C11, LVGL 9.4 API, TweetNaCl for crypto
 - PEP 723 inline metadata for Python test scripts (`uv run` compatible)
-- Data files: `data_contacts.json`, `data_identity.json`, `data_messages.json`,
-  `data_pending_keys.json`, `data_outbox.json`
+- **Persistent storage**: All data lives inside a LittleFS filesystem image
+  (`osm_data.img`). Delete the file to reset all state.
+- Files stored in LittleFS: `contacts.json`, `identity.json`, `messages.json`,
+  `pending_keys.json`, `outbox.json`
+- Desktop-only code guarded by `#ifndef OSM_MCU_BUILD`
 - OSM default TCP port: 19200 (scan range 19200–19209)
+
+## HAL (Platform Abstraction Layer)
+
+The OSM firmware is portable between desktop (SDL2) and MCU (ESP32-S3) via HAL
+modules in `osm/src/hal/`:
+
+| Module | Header | Desktop Impl | Purpose |
+|--------|--------|-------------|---------|
+| Storage | `hal_storage.h` | `hal_storage_filebd.c` | LittleFS init/mount/get (file-backed block device) |
+| RNG | `hal_rng.h` | `hal_rng_posix.c` | Random bytes (`/dev/urandom`) |
+| Log | `hal_log.h` | `hal_log_posix.c` | `fprintf(stderr, ...)` |
+
+Helper: `hal_storage_util.h` — inline `hal_storage_read_file()` / `hal_storage_write_file()`
+wrapping LittleFS open/read/write/close into single calls.
+
+### LittleFS Configuration (Desktop)
+
+- Block size: 4096, Block count: 256 (1 MB virtual flash)
+- Backing file: `osm_data.img` in working directory
+- Auto-formats on first use (mount fails → format → mount)
