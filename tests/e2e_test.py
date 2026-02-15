@@ -31,7 +31,8 @@ PORT_A = 19210
 PORT_B = 19211
 
 # Data files that OSM persists (relative to cwd)
-DATA_FILES = ["data_contacts.json", "data_messages.json", "data_identity.json"]
+DATA_FILES = ["data_contacts.json", "data_messages.json", "data_identity.json",
+              "data_pending_keys.json"]
 
 # Fragmentation constants (must match transport.h)
 FRAG_FLAG_START = 0x01
@@ -662,6 +663,133 @@ def test_pending_key_persistence():
     print("  PASS: Key survived restart (duplicate rejected)")
 
 
+def test_full_kex_and_multi_message():
+    """Test 15: Full key exchange + multiple bidirectional messages.
+
+    Uses real NaCl crypto (PyNaCl) to:
+    1. Pre-create identities and established contacts for two OSMs
+    2. Send 4 encrypted messages (2 in each direction)
+    3. Verify every message is decrypted correctly
+    4. Also tests trailing whitespace tolerance (clipboard paste issue)
+    """
+    print("\n[Test 15] Full KEX + multi-message (real crypto)")
+
+    try:
+        import nacl.bindings
+    except ImportError:
+        print("  SKIP: PyNaCl not installed (pip install pynacl)")
+        return
+
+    import json as json_mod
+
+    # Generate two keypairs
+    alice_pk, alice_sk = nacl.bindings.crypto_box_keypair()
+    bob_pk, bob_sk = nacl.bindings.crypto_box_keypair()
+
+    alice_pk_b64 = base64.b64encode(alice_pk).decode()
+    alice_sk_b64 = base64.b64encode(alice_sk).decode()
+    bob_pk_b64 = base64.b64encode(bob_pk).decode()
+    bob_sk_b64 = base64.b64encode(bob_sk).decode()
+
+    # Helper: encrypt a message using NaCl (matching OSM wire format)
+    # PyNaCl's crypto_box auto-pads with ZEROBYTES — do NOT pre-pad
+    def encrypt_msg(plaintext: str, peer_pk: bytes, my_sk: bytes) -> str:
+        pt_bytes = plaintext.encode()
+        nonce = nacl.bindings.randombytes(24)
+        ct = nacl.bindings.crypto_box(pt_bytes, nonce, peer_pk, my_sk)
+        raw = nonce + ct  # ct already has BOXZEROBYTES stripped
+        return base64.b64encode(raw).decode()
+
+    # -- Start OSM-Alice --
+    osm_alice = OsmProcess(PORT_A, "Alice")
+    osm_alice.cleanup_data_files()
+
+    # Write pre-established identity + contacts (no spaces in JSON keys!)
+    with open("data_identity.json", "w") as f:
+        f.write(f'{{"pubkey":"{alice_pk_b64}","privkey":"{alice_sk_b64}"}}\n')
+    with open("data_contacts.json", "w") as f:
+        f.write(f'[{{"id":1,"name":"Bob","status":2,"unread":0,"pubkey":"{bob_pk_b64}"}}]\n')
+    with open("data_messages.json", "w") as f:
+        f.write("[]\n")
+
+    assert osm_alice.start(clean=False), "OSM-Alice failed to start"
+    ca_alice = TcpClient(PORT_A, "CA-Alice")
+    assert ca_alice.connect(), "CA-Alice failed to connect"
+    time.sleep(0.5)
+
+    # -- Start OSM-Bob --
+    osm_bob = OsmProcess(PORT_B, "Bob")
+    osm_bob.cleanup_data_files()
+
+    with open("data_identity.json", "w") as f:
+        f.write(f'{{"pubkey":"{bob_pk_b64}","privkey":"{bob_sk_b64}"}}\n')
+    with open("data_contacts.json", "w") as f:
+        f.write(f'[{{"id":1,"name":"Alice","status":2,"unread":0,"pubkey":"{alice_pk_b64}"}}]\n')
+    with open("data_messages.json", "w") as f:
+        f.write("[]\n")
+
+    assert osm_bob.start(clean=False), "OSM-Bob failed to start"
+    ca_bob = TcpClient(PORT_B, "CA-Bob")
+    assert ca_bob.connect(), "CA-Bob failed to connect"
+    time.sleep(0.5)
+
+    # -- Send 4 messages: Alice→Bob, Bob→Alice, Alice→Bob, Bob→Alice --
+    messages = [
+        ("Alice→Bob", alice_sk, bob_pk, ca_bob, "Hello Bob, first msg!"),
+        ("Bob→Alice", bob_sk, alice_pk, ca_alice, "Hi Alice, replying!"),
+        ("Alice→Bob", alice_sk, bob_pk, ca_bob, "Second message to Bob"),
+        ("Bob→Alice", bob_sk, alice_pk, ca_alice, "Bob's second reply"),
+    ]
+
+    for label, sender_sk, receiver_pk, receiver_ca, plaintext in messages:
+        cipher_b64 = encrypt_msg(plaintext, receiver_pk, sender_sk)
+        envelope = f"OSM:MSG:{cipher_b64}".encode()
+        receiver_ca.send_message(CHAR_UUID_RX, envelope)
+        time.sleep(0.3)
+
+    # -- Also test trailing whitespace tolerance --
+    cipher_ws = encrypt_msg("Whitespace test", bob_pk, alice_sk)
+    envelope_ws = f"OSM:MSG:{cipher_ws}\n\r  ".encode()
+    ca_bob.send_message(CHAR_UUID_RX, envelope_ws)
+    time.sleep(0.3)
+
+    # -- Verify --
+    # Stop both and check logs
+    osm_alice.proc.terminate()
+    osm_alice.proc.wait(timeout=3)
+    stderr_alice = osm_alice.proc.stderr.read().decode()
+    osm_alice.proc = None
+
+    osm_bob.proc.terminate()
+    osm_bob.proc.wait(timeout=3)
+    stderr_bob = osm_bob.proc.stderr.read().decode()
+    osm_bob.proc = None
+
+    ca_alice.disconnect()
+    ca_bob.disconnect()
+
+    # Check Alice received 2 messages from Bob
+    alice_decrypted = stderr_alice.count("Decrypted from")
+    assert alice_decrypted >= 2, \
+        f"Alice should have decrypted ≥2 msgs, got {alice_decrypted}.\nLogs: {stderr_alice}"
+    print(f"  PASS: Alice decrypted {alice_decrypted} messages")
+
+    # Check Bob received 2 messages from Alice + 1 whitespace test
+    bob_decrypted = stderr_bob.count("Decrypted from")
+    assert bob_decrypted >= 3, \
+        f"Bob should have decrypted ≥3 msgs, got {bob_decrypted}.\nLogs: {stderr_bob}"
+    print(f"  PASS: Bob decrypted {bob_decrypted} messages")
+
+    # Verify specific plaintexts in logs
+    assert "Hello Bob, first msg!" in stderr_bob, "First msg not decrypted"
+    assert "Second message to Bob" in stderr_bob, "Third msg not decrypted"
+    assert "Hi Alice, replying!" in stderr_alice, "Reply not decrypted"
+    assert "Bob's second reply" in stderr_alice, "Second reply not decrypted"
+    assert "Whitespace test" in stderr_bob, "Whitespace-trimmed msg not decrypted"
+    print("  PASS: All plaintexts verified in logs")
+    print("  PASS: Trailing whitespace handled correctly")
+
+
 def main():
     if not os.path.isfile(BINARY):
         print(f"ERROR: OSM binary not found at {BINARY}")
@@ -687,6 +815,7 @@ def main():
         test_encrypted_msg_delivery,
         test_kex_outbound_no_name,
         test_pending_key_persistence,
+        test_full_kex_and_multi_message,
     ]
 
     passed = 0

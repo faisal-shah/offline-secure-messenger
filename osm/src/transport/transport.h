@@ -45,6 +45,10 @@ typedef struct {
     size_t          rx_len;
     uint16_t        rx_expected_seq;
     bool            rx_active;
+
+    /* TCP stream buffer for partial frame handling */
+    uint8_t         tcp_buf[TRANSPORT_MAX_MSG_SIZE];
+    size_t          tcp_buf_len;
 } transport_client_t;
 
 /* Callbacks */

@@ -138,6 +138,7 @@ static void accept_new_clients(transport_t *t)
     c->rx_len = 0;
     c->rx_expected_seq = 0;
     c->rx_active = false;
+    c->tcp_buf_len = 0;
     snprintf(c->name, sizeof(c->name), "CA-%d", slot);
 
     fprintf(stderr, "[transport] Client %d connected\n", slot);
@@ -197,13 +198,20 @@ static void process_fragment(transport_t *t, int client_idx,
     }
 }
 
-/* Read TCP frames from a client */
+/* Read TCP frames from a client (handles partial frames across reads) */
 static void read_client(transport_t *t, int idx)
 {
     transport_client_t *c = &t->clients[idx];
-    uint8_t buf[4096];
 
-    ssize_t n = recv(c->fd, buf, sizeof(buf), 0);
+    /* Append new data to the per-client TCP buffer */
+    size_t space = sizeof(c->tcp_buf) - c->tcp_buf_len;
+    if (space == 0) {
+        /* Buffer full with no complete frame — reset */
+        c->tcp_buf_len = 0;
+        return;
+    }
+
+    ssize_t n = recv(c->fd, c->tcp_buf + c->tcp_buf_len, space, 0);
     if (n <= 0) {
         if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
             /* Disconnect */
@@ -212,6 +220,7 @@ static void read_client(transport_t *t, int idx)
             c->state = CLIENT_DISCONNECTED;
             c->rx_active = false;
             c->rx_len = 0;
+            c->tcp_buf_len = 0;
             fprintf(stderr, "[transport] Client %d disconnected\n", idx);
             if (t->callbacks.on_disconnect)
                 t->callbacks.on_disconnect(idx);
@@ -219,20 +228,31 @@ static void read_client(transport_t *t, int idx)
         return;
     }
 
-    /* Parse TCP frames: [4B len][2B uuid][data...] */
+    c->tcp_buf_len += (size_t)n;
+
+    /* Parse complete TCP frames: [4B len][2B uuid][data...] */
     size_t pos = 0;
-    while (pos + sizeof(tcp_frame_header_t) <= (size_t)n) {
+    while (pos + sizeof(tcp_frame_header_t) <= c->tcp_buf_len) {
         tcp_frame_header_t hdr;
-        memcpy(&hdr, buf + pos, sizeof(hdr));
+        memcpy(&hdr, c->tcp_buf + pos, sizeof(hdr));
         hdr.msg_len = ntohl(hdr.msg_len);
         hdr.char_uuid = ntohs(hdr.char_uuid);
+
+        if (pos + sizeof(tcp_frame_header_t) + hdr.msg_len > c->tcp_buf_len)
+            break;  /* Incomplete frame — wait for more data */
+
         pos += sizeof(tcp_frame_header_t);
-
-        if (pos + hdr.msg_len > (size_t)n) break;
-
         process_fragment(t, idx, hdr.char_uuid,
-                         buf + pos, hdr.msg_len);
+                         c->tcp_buf + pos, hdr.msg_len);
         pos += hdr.msg_len;
+    }
+
+    /* Shift unconsumed data to front of buffer */
+    if (pos > 0) {
+        size_t remaining = c->tcp_buf_len - pos;
+        if (remaining > 0)
+            memmove(c->tcp_buf, c->tcp_buf + pos, remaining);
+        c->tcp_buf_len = remaining;
     }
 }
 

@@ -231,8 +231,9 @@ fun DeviceDetailPanel(
             }
             Button(
                 onClick = {
-                    if (inputText.isNotBlank()) {
-                        onSendText(inputText)
+                    val trimmed = inputText.trim()
+                    if (trimmed.isNotEmpty()) {
+                        onSendText(trimmed)
                         inputText = ""
                     }
                 },

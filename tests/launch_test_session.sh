@@ -71,9 +71,14 @@ if [ ! -f "$OSM_BIN" ]; then
 fi
 
 # Clean up stale data files so each session starts fresh
-rm -f "$REPO_DIR/osm/build/data_contacts.json" \
-      "$REPO_DIR/osm/build/data_messages.json" \
-      "$REPO_DIR/osm/build/data_identity.json"
+rm -f "$REPO_DIR/osm/build/alice/data_contacts.json" \
+      "$REPO_DIR/osm/build/alice/data_messages.json" \
+      "$REPO_DIR/osm/build/alice/data_identity.json" \
+      "$REPO_DIR/osm/build/alice/data_pending_keys.json" \
+      "$REPO_DIR/osm/build/bob/data_contacts.json" \
+      "$REPO_DIR/osm/build/bob/data_messages.json" \
+      "$REPO_DIR/osm/build/bob/data_identity.json" \
+      "$REPO_DIR/osm/build/bob/data_pending_keys.json"
 
 echo "============================================================"
 echo "  Offline Secure Messenger — Test Session"
@@ -173,13 +178,14 @@ echo "  Workflow to test:"
 echo "    1. In OSM-Alice: generate keypair (first launch wizard)"
 echo "    2. In OSM-Bob:   generate keypair"
 echo "    3. In OSM-Alice: Contacts → Add 'Bob'"
-echo "       This sends Alice's pubkey as OSM:KEY:Alice:<key> to CA-Alice"
+echo "       This sends Alice's pubkey as OSM:KEY:<key> to CA-Alice"
 echo "    4. Copy the text from CA-Alice, paste into CA-Bob, send to OSM-Bob"
-echo "    5. OSM-Bob auto-creates contact 'Alice' (PENDING_RECEIVED)"
+echo "    5. OSM-Bob receives key → 'Assign Key' screen"
+echo "       Create new contact 'Alice' → key exchange continues"
 echo "    6. In OSM-Bob: go to Contacts → Alice → Complete Exchange"
-echo "       This sends Bob's pubkey as OSM:KEY:Bob:<key> to CA-Bob"
+echo "       This sends Bob's pubkey to CA-Bob"
 echo "    7. Copy from CA-Bob, paste into CA-Alice, send to OSM-Alice"
-echo "    8. OSM-Alice auto-completes the exchange — both now ESTABLISHED"
+echo "    8. OSM-Alice: 'Assign Key' → select 'Bob (Pending)' → ESTABLISHED"
 echo "    9. Send encrypted messages between Alice and Bob via the CAs"
 echo ""
 echo "  Logs:"

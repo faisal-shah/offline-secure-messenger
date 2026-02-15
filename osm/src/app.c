@@ -186,6 +186,13 @@ static void on_ca_message(int client_idx, uint16_t char_uuid,
     memcpy(buf, data, len);
     buf[len] = '\0';
 
+    /* Strip trailing whitespace (clipboard paste may add \n \r etc.) */
+    while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r' ||
+                       buf[len - 1] == ' '  || buf[len - 1] == '\t')) {
+        buf[--len] = '\0';
+    }
+    if (len == 0) return;
+
     app_log("CA->OSM", buf);
 
     if (strncmp(buf, MSG_PREFIX_KEY, strlen(MSG_PREFIX_KEY)) == 0) {
