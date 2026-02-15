@@ -1,6 +1,8 @@
 #include "app.h"
 #include "data/contacts.h"
 #include "data/messages.h"
+#include "data/identity.h"
+#include "screens/scr_setup.h"
 #include "screens/scr_home.h"
 #include "screens/scr_contacts.h"
 #include "screens/scr_key_exchange.h"
@@ -90,6 +92,7 @@ void app_init(lv_display_t *disp,
     mkdir("screenshots", 0755);
 
     /* Load persisted data */
+    identity_load(&g_app.identity);
     contacts_load();
     messages_load();
 
@@ -105,6 +108,7 @@ void app_init(lv_display_t *disp,
 
     /* Create all screens (on device display) */
     lv_display_set_default(disp);
+    scr_setup_create();
     scr_home_create();
     scr_contacts_create();
     scr_key_exchange_create();
@@ -112,9 +116,19 @@ void app_init(lv_display_t *disp,
     scr_inbox_create();
     scr_conversation_create();
 
-    /* Start on home */
-    app_navigate_to(SCR_HOME);
-    scr_home_refresh();
+    /* Start on setup or home depending on identity */
+    if (g_app.identity.valid) {
+        app_navigate_to(SCR_HOME);
+        scr_home_refresh();
+    } else if (test_mode) {
+        /* In test mode, auto-generate keypair so tests work */
+        crypto_generate_keypair(&g_app.identity);
+        identity_save(&g_app.identity);
+        app_navigate_to(SCR_HOME);
+        scr_home_refresh();
+    } else {
+        app_navigate_to(SCR_SETUP);
+    }
 
     if (test_mode) {
         printf("=== SELF-TEST MODE ===\n");
@@ -178,6 +192,14 @@ static void test_driver_init(void)
     test_ctx.fail_count = 0;
 }
 
+/* Generate a test peer keypair and store its pubkey in a contact */
+static void test_set_peer_pubkey(contact_t *c)
+{
+    crypto_identity_t peer;
+    crypto_generate_keypair(&peer);
+    crypto_pubkey_to_b64(peer.pubkey, c->public_key, MAX_KEY_LEN);
+}
+
 /* Each step: do an action, take a screenshot, verify state */
 static void test_execute_step(void)
 {
@@ -232,8 +254,8 @@ static void test_execute_step(void)
         printf("[Step 4] Complete key exchange with Alice\n");
         contact_t *alice = contacts_find_by_name("Alice");
         if (alice) {
+            test_set_peer_pubkey(alice);
             alice->status = CONTACT_ESTABLISHED;
-            snprintf(alice->shared_secret, MAX_KEY_LEN, "shared_secret_alice_001");
             contacts_save();
             scr_key_exchange_refresh();
             app_take_screenshot("05_key_exchange_complete");
@@ -329,6 +351,7 @@ static void test_execute_step(void)
         contact_t *bob = contacts_add("Bob");
         if (bob) {
             bob->status = CONTACT_PENDING_RECEIVED;
+            test_set_peer_pubkey(bob);
             contacts_save();
         }
         app_navigate_to(SCR_CONTACTS);
@@ -343,7 +366,6 @@ static void test_execute_step(void)
         contact_t *bob = contacts_find_by_name("Bob");
         if (bob) {
             bob->status = CONTACT_ESTABLISHED;
-            snprintf(bob->shared_secret, MAX_KEY_LEN, "shared_secret_bob_002");
             contacts_save();
         }
         scr_contacts_refresh();
@@ -504,12 +526,12 @@ static void test_execute_step(void)
         break;
     }
 
-    case 24: { /* Simulate DH reply (as I/O monitor would) → ESTABLISHED */
+    case 24: { /* Simulate DH reply → ESTABLISHED */
         printf("[Step 24] Simulate DH reply for Charlie\n");
         contact_t *c = contacts_find_by_name("Charlie");
         if (c) {
+            test_set_peer_pubkey(c);
             c->status = CONTACT_ESTABLISHED;
-            snprintf(c->shared_secret, MAX_KEY_LEN, "test_secret_charlie");
             contacts_save();
             scr_key_exchange_refresh();
             lv_timer_handler();
@@ -903,6 +925,95 @@ static void test_execute_step(void)
         /* Expected: header(0), msg_list(1), reply_bar(2), confirm_del_thread(3), confirm_del_msg(4) */
         if (cvc >= 5) test_pass("Conversation screen has delete dialogs");
         else test_fail("Conversation screen missing delete dialogs");
+        break;
+    }
+
+    case 41: { /* Crypto: keypair generation */
+        printf("[Step 41] Crypto: keypair generation\n");
+        crypto_identity_t id;
+        crypto_generate_keypair(&id);
+        if (id.valid) test_pass("Keypair generated");
+        else test_fail("Keypair generation failed");
+
+        char b64[CRYPTO_PUBKEY_B64_SIZE];
+        crypto_pubkey_to_b64(id.pubkey, b64, sizeof(b64));
+        if (strlen(b64) == 44) test_pass("Pubkey base64 correct length");
+        else test_fail("Pubkey base64 wrong length");
+        break;
+    }
+
+    case 42: { /* Crypto: encrypt/decrypt round-trip */
+        printf("[Step 42] Crypto: encrypt/decrypt round-trip\n");
+        crypto_identity_t alice, bob;
+        crypto_generate_keypair(&alice);
+        crypto_generate_keypair(&bob);
+
+        const char *msg = "Hello Bob, this is a secret message!";
+        char cipher[MAX_CIPHER_LEN];
+        bool ok = crypto_encrypt(msg, bob.pubkey, alice.privkey,
+                                 cipher, sizeof(cipher));
+        if (ok && strlen(cipher) > 0) test_pass("Encrypt succeeded");
+        else { test_fail("Encrypt failed"); break; }
+
+        char plain[MAX_TEXT_LEN];
+        ok = crypto_decrypt(cipher, alice.pubkey, bob.privkey,
+                            plain, sizeof(plain));
+        if (ok && strcmp(plain, msg) == 0) test_pass("Decrypt round-trip OK");
+        else test_fail("Decrypt round-trip failed");
+        break;
+    }
+
+    case 43: { /* Crypto: wrong key rejection */
+        printf("[Step 43] Crypto: wrong key rejection\n");
+        crypto_identity_t alice, bob, eve;
+        crypto_generate_keypair(&alice);
+        crypto_generate_keypair(&bob);
+        crypto_generate_keypair(&eve);
+
+        char cipher[MAX_CIPHER_LEN];
+        crypto_encrypt("Secret", bob.pubkey, alice.privkey,
+                       cipher, sizeof(cipher));
+
+        char plain[MAX_TEXT_LEN];
+        bool ok = crypto_decrypt(cipher, alice.pubkey, eve.privkey,
+                                 plain, sizeof(plain));
+        if (!ok) test_pass("Wrong key correctly rejected");
+        else test_fail("Wrong key was not rejected");
+        break;
+    }
+
+    case 44: { /* Crypto: identity persistence */
+        printf("[Step 44] Crypto: identity persistence\n");
+        crypto_identity_t id;
+        crypto_generate_keypair(&id);
+        identity_save(&id);
+
+        crypto_identity_t loaded;
+        bool ok = identity_load(&loaded);
+        if (ok && loaded.valid) test_pass("Identity loaded from disk");
+        else { test_fail("Identity load failed"); break; }
+
+        if (memcmp(id.pubkey, loaded.pubkey, CRYPTO_PUBKEY_BYTES) == 0 &&
+            memcmp(id.privkey, loaded.privkey, CRYPTO_PRIVKEY_BYTES) == 0)
+            test_pass("Identity matches after save/load");
+        else test_fail("Identity mismatch after save/load");
+        break;
+    }
+
+    case 45: { /* Setup screen existence test */
+        printf("[Step 45] Setup screen exists\n");
+        if (g_app.screens[SCR_SETUP] != NULL) test_pass("Setup screen created");
+        else test_fail("Setup screen missing");
+
+        app_navigate_to(SCR_SETUP);
+        scr_setup_refresh();
+        lv_timer_handler();
+        /* Since identity is valid (test mode), should show continue */
+        if (g_app.identity.valid) test_pass("Identity valid in test mode");
+        else test_fail("No identity in test mode");
+        app_take_screenshot("33_setup_screen");
+        app_navigate_to(SCR_HOME);
+        scr_home_refresh();
         break;
     }
 

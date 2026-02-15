@@ -1,5 +1,6 @@
 #include "messages.h"
-#include "../crypto_sim.h"
+#include "../crypto.h"
+#include "../data/contacts.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -131,7 +132,19 @@ message_t *messages_add(uint32_t contact_id, msg_direction_t dir, const char *pl
     m->contact_id = contact_id;
     m->direction = dir;
     strncpy(m->plaintext, plaintext, MAX_TEXT_LEN - 1);
-    crypto_sim_encrypt(plaintext, contact_id, m->ciphertext, MAX_CIPHER_LEN);
+
+    /* Encrypt if identity and peer key are available */
+    uint8_t peer_pk[CRYPTO_PUBKEY_BYTES];
+    contact_t *c = contacts_find_by_id(contact_id);
+    if (g_app.identity.valid && c &&
+        c->public_key[0] != '\0' &&
+        crypto_b64_to_pubkey(c->public_key, peer_pk)) {
+        crypto_encrypt(plaintext, peer_pk, g_app.identity.privkey,
+                       m->ciphertext, MAX_CIPHER_LEN);
+    } else {
+        snprintf(m->ciphertext, MAX_CIPHER_LEN, "(unencrypted)");
+    }
+
     m->timestamp = time(NULL);
     g_app.message_count++;
     return m;

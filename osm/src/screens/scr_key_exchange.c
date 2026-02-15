@@ -5,7 +5,7 @@
 #include "scr_contacts.h"
 #include "../app.h"
 #include "../data/contacts.h"
-#include "../crypto_sim.h"
+#include "../crypto.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -35,17 +35,17 @@ static void action_cb(lv_event_t *e)
         /* In real device: would wait for incoming data. In prototype: no-op */
         break;
     case CONTACT_PENDING_RECEIVED:
-        /* Send our public key back */
-        crypto_sim_generate_dh_pubkey(c->public_key, MAX_KEY_LEN);
-        snprintf(c->shared_secret, MAX_KEY_LEN, "simulated_shared_%u", c->id);
-        c->status = CONTACT_ESTABLISHED;
-        contacts_save();
-
+        /* Send our pubkey; peer's key is already in c->public_key */
         {
+            char our_b64[CRYPTO_PUBKEY_B64_SIZE];
+            crypto_pubkey_to_b64(g_app.identity.pubkey,
+                                 our_b64, sizeof(our_b64));
             char ctx[128];
             snprintf(ctx, sizeof(ctx), "DH Key -> %s", c->name);
-            app_log(ctx, c->public_key);
+            app_log(ctx, our_b64);
         }
+        c->status = CONTACT_ESTABLISHED;
+        contacts_save();
 
         scr_key_exchange_refresh();
         break;

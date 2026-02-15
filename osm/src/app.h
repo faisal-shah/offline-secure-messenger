@@ -2,6 +2,7 @@
 #define APP_H
 
 #include "lvgl.h"
+#include "crypto.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
@@ -31,8 +32,7 @@ typedef struct {
     uint32_t id;
     char     name[MAX_NAME_LEN];
     contact_status_t status;
-    char     public_key[MAX_KEY_LEN];
-    char     shared_secret[MAX_KEY_LEN];
+    char     public_key[MAX_KEY_LEN];   /* peer's pubkey (base64) */
     uint32_t unread_count;
     time_t   created_at;
 } contact_t;
@@ -55,6 +55,7 @@ typedef struct {
    SCREEN IDS
 ====================*/
 typedef enum {
+    SCR_SETUP,
     SCR_HOME,
     SCR_CONTACTS,
     SCR_KEY_EXCHANGE,
@@ -81,6 +82,9 @@ typedef struct {
 
     /* Navigation context */
     uint32_t      selected_contact_id;
+
+    /* Identity (our keypair) */
+    crypto_identity_t identity;
 
     /* Data */
     contact_t     contacts[MAX_CONTACTS];

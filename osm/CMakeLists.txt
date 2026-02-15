@@ -33,3 +33,6 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 )
 
 target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-unused-parameter)
+
+# Suppress warnings from TweetNaCl (public domain, vendored as-is)
+set_source_files_properties(src/tweetnacl.c PROPERTIES COMPILE_FLAGS "-w")

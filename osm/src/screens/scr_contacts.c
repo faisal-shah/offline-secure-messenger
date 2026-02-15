@@ -7,7 +7,7 @@
 #include "../app.h"
 #include "../data/contacts.h"
 #include "../data/messages.h"
-#include "../crypto_sim.h"
+#include "../crypto.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -31,7 +31,9 @@ static void add_contact_confirm_cb(lv_event_t *e)
     if (name && strlen(name) > 0) {
         contact_t *c = contacts_add(name);
         if (c) {
-            crypto_sim_generate_dh_pubkey(c->public_key, MAX_KEY_LEN);
+            /* Store our pubkey as the key to send to the peer */
+            crypto_pubkey_to_b64(g_app.identity.pubkey,
+                                 c->public_key, MAX_KEY_LEN);
             c->status = CONTACT_PENDING_SENT;
             contacts_save();
 

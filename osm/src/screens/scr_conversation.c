@@ -6,7 +6,7 @@
 #include "../app.h"
 #include "../data/contacts.h"
 #include "../data/messages.h"
-#include "../crypto_sim.h"
+#include "../crypto.h"
 #include <stdio.h>
 #include <string.h>
 

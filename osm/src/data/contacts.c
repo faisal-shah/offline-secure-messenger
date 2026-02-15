@@ -62,17 +62,6 @@ void contacts_load(void)
             }
         }
 
-        const char *ss_str = strstr(id_str, "\"secret\":\"");
-        if (ss_str) {
-            ss_str += 10;
-            const char *end = strchr(ss_str, '"');
-            if (end) {
-                size_t slen = end - ss_str;
-                if (slen >= MAX_KEY_LEN) slen = MAX_KEY_LEN - 1;
-                memcpy(c->shared_secret, ss_str, slen);
-            }
-        }
-
         if (c->id >= g_app.next_contact_id)
             g_app.next_contact_id = c->id + 1;
 
@@ -93,9 +82,9 @@ void contacts_save(void)
     for (uint32_t i = 0; i < g_app.contact_count; i++) {
         contact_t *c = &g_app.contacts[i];
         fprintf(f, "  {\"id\":%u, \"name\":\"%s\", \"status\":%d, \"unread\":%u, "
-                   "\"pubkey\":\"%s\", \"secret\":\"%s\"}%s\n",
+                   "\"pubkey\":\"%s\"}%s\n",
                 c->id, c->name, c->status, c->unread_count,
-                c->public_key, c->shared_secret,
+                c->public_key,
                 (i < g_app.contact_count - 1) ? "," : "");
     }
     fprintf(f, "]\n");
