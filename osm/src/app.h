@@ -80,6 +80,9 @@ typedef enum {
 typedef struct {
     char     data[MAX_CIPHER_LEN];
     uint16_t char_uuid;
+    uint8_t  msg_id[8];  /* SHA-512 first 8 bytes for ACK tracking */
+    bool     acked;
+    bool     sent;       /* true once sent (reset on CA reconnect) */
 } outbox_entry_t;
 
 /*====================
@@ -148,6 +151,8 @@ void app_test_tick(void);
 /* Transport: enqueue data to send to CA, flush queued messages */
 void app_outbox_enqueue(uint16_t char_uuid, const char *data);
 void app_outbox_flush(void);
+void app_outbox_save(void);
+void app_outbox_load(void);
 void app_transport_poll(void);
 
 /* Message envelope helpers */

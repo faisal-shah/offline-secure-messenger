@@ -26,7 +26,14 @@ class TcpTransport(private val portFilter: Int? = null) : Transport {
         private const val CHAR_UUID_RX: Short = 0xFE03.toShort()
         private const val FRAG_FLAG_START: Byte = 0x01
         private const val FRAG_FLAG_END: Byte = 0x02
+        private const val FRAG_FLAG_ACK: Byte = 0x04
         private const val MTU = 200
+        private const val ACK_ID_LEN = 8
+
+        fun computeMsgId(data: ByteArray): ByteArray {
+            val digest = java.security.MessageDigest.getInstance("SHA-512")
+            return digest.digest(data).copyOf(ACK_ID_LEN)
+        }
     }
 
     private val connections = mutableMapOf<String, Socket>()
@@ -36,6 +43,7 @@ class TcpTransport(private val portFilter: Int? = null) : Transport {
     private var messageListener: ((String, ByteArray) -> Unit)? = null
     private var connectionListener: ((String, Boolean) -> Unit)? = null
     private var discoveryListener: ((OsmDevice) -> Unit)? = null
+    private var ackListener: ((String, ByteArray) -> Unit)? = null
 
     override suspend fun startDiscovery() {
         discoveryJob?.cancel()
@@ -129,6 +137,28 @@ class TcpTransport(private val portFilter: Int? = null) : Transport {
         discoveryListener = listener
     }
 
+    override fun onAck(listener: (String, ByteArray) -> Unit) {
+        ackListener = listener
+    }
+
+    /** Send an ACK frame for a received message. */
+    private fun sendAck(socket: Socket, msgId: ByteArray) {
+        val fragBuf = ByteBuffer.allocate(3 + ACK_ID_LEN)
+            .order(ByteOrder.LITTLE_ENDIAN)
+        fragBuf.put(FRAG_FLAG_ACK)
+        fragBuf.putShort(0)
+        fragBuf.put(msgId, 0, ACK_ID_LEN)
+        val fragData = fragBuf.array()
+
+        val frameBuf = ByteBuffer.allocate(6 + fragData.size)
+            .order(ByteOrder.BIG_ENDIAN)
+        frameBuf.putInt(fragData.size)
+        frameBuf.putShort(CHAR_UUID_RX)
+        frameBuf.put(fragData)
+        socket.getOutputStream().write(frameBuf.array())
+        socket.getOutputStream().flush()
+    }
+
     /** Send data with fragmentation protocol. */
     private fun sendFragmented(socket: Socket, charUuid: Short, data: ByteArray) {
         val maxPayload = MTU - 3 // 1 flags + 2 seq
@@ -210,6 +240,16 @@ class TcpTransport(private val portFilter: Int? = null) : Transport {
                 val flags = fragBuf.get()
                 val seq = fragBuf.short
 
+                // Handle incoming ACK from OSM
+                if ((flags.toInt() and FRAG_FLAG_ACK.toInt()) != 0) {
+                    if (fragBuf.remaining() >= ACK_ID_LEN) {
+                        val msgId = ByteArray(ACK_ID_LEN)
+                        fragBuf.get(msgId)
+                        ackListener?.invoke(deviceId, msgId)
+                    }
+                    continue
+                }
+
                 if ((flags.toInt() and FRAG_FLAG_START.toInt()) != 0) {
                     reassemblyLen = 0
                     expectedSeq = 0
@@ -231,6 +271,12 @@ class TcpTransport(private val portFilter: Int? = null) : Transport {
 
                 if ((flags.toInt() and FRAG_FLAG_END.toInt()) != 0) {
                     val completeMessage = reassemblyBuf.copyOf(reassemblyLen)
+
+                    // Send ACK back to OSM
+                    try {
+                        sendAck(socket, computeMsgId(completeMessage))
+                    } catch (_: IOException) { /* ignore ACK send failure */ }
+
                     messageListener?.invoke(deviceId, completeMessage)
                     active = false
                     reassemblyLen = 0

@@ -51,16 +51,22 @@ typedef struct {
     size_t          tcp_buf_len;
 } transport_client_t;
 
+/* ACK message ID: first 8 bytes of SHA-256 of reassembled payload */
+#define TRANSPORT_ACK_ID_LEN  8
+
 /* Callbacks */
 typedef void (*transport_on_connect_cb)(int client_idx);
 typedef void (*transport_on_disconnect_cb)(int client_idx);
 typedef void (*transport_on_message_cb)(int client_idx, uint16_t char_uuid,
                                        const uint8_t *data, size_t len);
+typedef void (*transport_on_ack_cb)(int client_idx,
+                                    const uint8_t msg_id[TRANSPORT_ACK_ID_LEN]);
 
 typedef struct {
     transport_on_connect_cb    on_connect;
     transport_on_disconnect_cb on_disconnect;
     transport_on_message_cb    on_message;
+    transport_on_ack_cb        on_ack;
 } transport_callbacks_t;
 
 typedef struct {
@@ -102,5 +108,13 @@ int transport_connected_count(const transport_t *t);
 
 /* Set callbacks */
 void transport_set_callbacks(transport_t *t, transport_callbacks_t cbs);
+
+/* Compute message ID (first 8 bytes of SHA-256 of payload) */
+void transport_compute_msg_id(const uint8_t *data, size_t len,
+                              uint8_t out[TRANSPORT_ACK_ID_LEN]);
+
+/* Send an ACK for a received message */
+bool transport_send_ack(transport_t *t, int client_idx,
+                        const uint8_t msg_id[TRANSPORT_ACK_ID_LEN]);
 
 #endif /* TRANSPORT_H */

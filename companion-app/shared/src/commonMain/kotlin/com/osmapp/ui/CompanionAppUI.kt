@@ -21,6 +21,9 @@ import androidx.compose.ui.unit.sp
 import com.osmapp.model.CipherMessage
 import com.osmapp.model.ConnectionState
 import com.osmapp.model.OsmDevice
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 val DarkBg = Color(0xFF1A1A2E)
 val HeaderBg = Color(0xFF16213E)
@@ -28,6 +31,10 @@ val CardBg = Color(0xFF0F3460)
 val PrimaryBlue = Color(0xFF00B0FF)
 val GreenOk = Color(0xFF00E676)
 val RedBad = Color(0xFFFF1744)
+val YellowPending = Color(0xFFFFD600)
+
+private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+private fun formatTs(ts: Long): String = timeFormat.format(Date(ts))
 
 @Composable
 fun CompanionAppUI(
@@ -183,25 +190,72 @@ fun DeviceDetailPanel(
                     colors = CardDefaults.cardColors(containerColor = CardBg),
                     shape = RoundedCornerShape(6.dp)
                 ) {
-                    Row(Modifier.padding(8.dp).fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            msg.text.take(80) + if (msg.text.length > 80) "..." else "",
-                            fontSize = 11.sp,
-                            modifier = Modifier.weight(1f),
-                            color = Color.White
-                        )
-                        TextButton(onClick = {
-                            clipboardManager.setText(AnnotatedString(msg.text))
-                        }) {
-                            Text("Copy", fontSize = 10.sp)
+                    Column(Modifier.padding(8.dp).fillMaxWidth()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                msg.text.take(80) + if (msg.text.length > 80) "..." else "",
+                                fontSize = 11.sp,
+                                modifier = Modifier.weight(1f),
+                                color = Color.White
+                            )
+                            TextButton(onClick = {
+                                clipboardManager.setText(AnnotatedString(msg.text))
+                            }) {
+                                Text("Copy", fontSize = 10.sp)
+                            }
                         }
+                        Text(formatTs(msg.timestamp), fontSize = 9.sp, color = Color.Gray)
                     }
                 }
             }
         }
 
         Spacer(Modifier.height(8.dp))
+
+        // Outbox (sent to OSM) with delivery status
+        val toOsm = device.outbox.filter { it.direction == CipherMessage.Direction.TO_OSM }
+        if (toOsm.isNotEmpty()) {
+            Text("Sent to OSM", fontWeight = FontWeight.Medium, fontSize = 13.sp, color = PrimaryBlue)
+            Spacer(Modifier.height(4.dp))
+            LazyColumn(
+                Modifier.weight(0.6f).fillMaxWidth()
+                    .background(HeaderBg, RoundedCornerShape(8.dp))
+                    .padding(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                items(toOsm.reversed()) { msg ->
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = CardBg),
+                        shape = RoundedCornerShape(6.dp)
+                    ) {
+                        Column(Modifier.padding(8.dp).fillMaxWidth()) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    msg.text.take(60) + if (msg.text.length > 60) "..." else "",
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.weight(1f),
+                                    color = Color.White
+                                )
+                                // Delivery indicator
+                                Box(
+                                    Modifier.size(8.dp).clip(CircleShape).background(
+                                        if (msg.delivered) GreenOk else YellowPending
+                                    )
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    if (msg.delivered) "✓" else "⏳",
+                                    fontSize = 10.sp,
+                                    color = if (msg.delivered) GreenOk else YellowPending
+                                )
+                            }
+                            Text(formatTs(msg.timestamp), fontSize = 9.sp, color = Color.Gray)
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
 
         // Send to OSM
         Text("Send to OSM", fontWeight = FontWeight.Medium, fontSize = 13.sp, color = PrimaryBlue)

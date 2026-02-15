@@ -86,6 +86,10 @@ static void on_ca_connect(int client_idx)
     char buf[64];
     snprintf(buf, sizeof(buf), "CA client %d connected", client_idx);
     app_log("Transport", buf);
+
+    /* Reset sent flags so queued messages get re-flushed */
+    for (uint32_t i = 0; i < g_app.outbox_count; i++)
+        g_app.outbox[i].sent = false;
 }
 
 static void on_ca_disconnect(int client_idx)
@@ -93,6 +97,35 @@ static void on_ca_disconnect(int client_idx)
     char buf[64];
     snprintf(buf, sizeof(buf), "CA client %d disconnected", client_idx);
     app_log("Transport", buf);
+}
+
+static void on_ca_ack(int client_idx,
+                      const uint8_t msg_id[TRANSPORT_ACK_ID_LEN])
+{
+    (void)client_idx;
+    /* Mark matching outbox entry as acked and compact */
+    for (uint32_t i = 0; i < g_app.outbox_count; i++) {
+        if (memcmp(g_app.outbox[i].msg_id, msg_id,
+                   TRANSPORT_ACK_ID_LEN) == 0) {
+            /* Remove entry by shifting */
+            for (uint32_t j = i; j < g_app.outbox_count - 1; j++)
+                g_app.outbox[j] = g_app.outbox[j + 1];
+            g_app.outbox_count--;
+            memset(&g_app.outbox[g_app.outbox_count], 0,
+                   sizeof(outbox_entry_t));
+            app_outbox_save();
+
+            char hex[20];
+            for (int k = 0; k < TRANSPORT_ACK_ID_LEN && k < 4; k++)
+                snprintf(hex + k * 2, 3, "%02x", msg_id[k]);
+            hex[8] = '\0';
+            char logbuf[64];
+            snprintf(logbuf, sizeof(logbuf), "ACK %s (%u remain)",
+                     hex, g_app.outbox_count);
+            app_log("Outbox", logbuf);
+            return;
+        }
+    }
 }
 
 static void handle_key_exchange_msg(const char *pubkey_b64)
@@ -232,6 +265,7 @@ void app_init(lv_display_t *disp,
     contacts_load();
     messages_load();
     app_pending_keys_load();
+    app_outbox_load();
 
     /* Apply dark theme */
     lv_theme_t *th = lv_theme_default_init(
@@ -260,6 +294,7 @@ void app_init(lv_display_t *disp,
         .on_connect    = on_ca_connect,
         .on_disconnect = on_ca_disconnect,
         .on_message    = on_ca_message,
+        .on_ack        = on_ca_ack,
     });
     if (!test_mode) {
         if (transport_start(&g_app.transport))
@@ -293,6 +328,7 @@ void app_deinit(void)
     transport_stop(&g_app.transport);
     contacts_save();
     messages_save();
+    app_outbox_save();
 }
 
 bool app_should_quit(void)
@@ -308,17 +344,29 @@ void app_navigate_to(screen_id_t scr)
 }
 
 /*---------- Outbox (queued messages for CA) ----------*/
+#define OUTBOX_FILE "data_outbox.json"
+
 void app_outbox_enqueue(uint16_t char_uuid, const char *data)
 {
     if (g_app.outbox_count >= MAX_OUTBOX) {
-        app_log("Outbox", "FULL — dropping message");
-        return;
+        app_log("Outbox", "FULL — dropping oldest");
+        /* FIFO eviction: drop oldest */
+        for (uint32_t i = 0; i < g_app.outbox_count - 1; i++)
+            g_app.outbox[i] = g_app.outbox[i + 1];
+        g_app.outbox_count--;
     }
     outbox_entry_t *e = &g_app.outbox[g_app.outbox_count++];
+    memset(e, 0, sizeof(*e));
     e->char_uuid = char_uuid;
     strncpy(e->data, data, MAX_CIPHER_LEN - 1);
     e->data[MAX_CIPHER_LEN - 1] = '\0';
+    e->acked = false;
+
+    /* Compute message ID for ACK tracking */
+    transport_compute_msg_id((const uint8_t *)data, strlen(data), e->msg_id);
+
     app_log("Outbox", "Queued message");
+    app_outbox_save();
 
     /* Try to flush immediately */
     app_outbox_flush();
@@ -332,15 +380,16 @@ void app_outbox_flush(void)
     uint32_t sent = 0;
     for (uint32_t i = 0; i < g_app.outbox_count; i++) {
         outbox_entry_t *e = &g_app.outbox[i];
+        if (e->sent) continue;  /* Already sent, waiting for ACK */
         transport_broadcast_message(&g_app.transport, e->char_uuid,
                                     (const uint8_t *)e->data,
                                     strlen(e->data));
+        e->sent = true;
         sent++;
     }
     if (sent > 0) {
-        g_app.outbox_count = 0;
-        char buf[32];
-        snprintf(buf, sizeof(buf), "Flushed %u messages", sent);
+        char buf[48];
+        snprintf(buf, sizeof(buf), "Sent %u messages (await ACK)", sent);
         app_log("Outbox", buf);
     }
 }
@@ -351,6 +400,88 @@ void app_transport_poll(void)
 
     /* Try to flush outbox on each poll (in case CA just connected) */
     app_outbox_flush();
+}
+
+void app_outbox_save(void)
+{
+    FILE *f = fopen(OUTBOX_FILE, "w");
+    if (!f) return;
+    fprintf(f, "[\n");
+    for (uint32_t i = 0; i < g_app.outbox_count; i++) {
+        outbox_entry_t *e = &g_app.outbox[i];
+        /* Encode msg_id as hex */
+        char hex[TRANSPORT_ACK_ID_LEN * 2 + 1];
+        for (int k = 0; k < TRANSPORT_ACK_ID_LEN; k++)
+            snprintf(hex + k * 2, 3, "%02x", e->msg_id[k]);
+        fprintf(f, "  {\"uuid\":%u,\"id\":\"%s\",\"data\":\"%s\"}%s\n",
+                e->char_uuid, hex, e->data,
+                (i < g_app.outbox_count - 1) ? "," : "");
+    }
+    fprintf(f, "]\n");
+    fclose(f);
+}
+
+void app_outbox_load(void)
+{
+    FILE *f = fopen(OUTBOX_FILE, "r");
+    if (!f) return;
+
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (len <= 0) { fclose(f); return; }
+
+    char *buf = malloc(len + 1);
+    if (!buf) { fclose(f); return; }
+    fread(buf, 1, len, f);
+    buf[len] = '\0';
+    fclose(f);
+
+    g_app.outbox_count = 0;
+    const char *p = buf;
+    while (g_app.outbox_count < MAX_OUTBOX) {
+        const char *uuid_str = strstr(p, "\"uuid\":");
+        if (!uuid_str) break;
+
+        outbox_entry_t *e = &g_app.outbox[g_app.outbox_count];
+        memset(e, 0, sizeof(*e));
+
+        unsigned int uuid_val = 0;
+        sscanf(uuid_str, "\"uuid\":%u", &uuid_val);
+        e->char_uuid = (uint16_t)uuid_val;
+
+        /* Parse msg_id hex */
+        const char *id_str = strstr(uuid_str, "\"id\":\"");
+        if (id_str) {
+            id_str += 6;
+            for (int k = 0; k < TRANSPORT_ACK_ID_LEN && id_str[k*2] && id_str[k*2+1]; k++) {
+                unsigned int byte_val;
+                sscanf(id_str + k * 2, "%2x", &byte_val);
+                e->msg_id[k] = (uint8_t)byte_val;
+            }
+        }
+
+        /* Parse data */
+        const char *data_str = strstr(uuid_str, "\"data\":\"");
+        if (data_str) {
+            data_str += 8;
+            const char *end = strchr(data_str, '"');
+            if (end) {
+                size_t dlen = (size_t)(end - data_str);
+                if (dlen >= MAX_CIPHER_LEN) dlen = MAX_CIPHER_LEN - 1;
+                memcpy(e->data, data_str, dlen);
+                e->data[dlen] = '\0';
+            }
+        }
+
+        g_app.outbox_count++;
+        p = uuid_str + 7;
+    }
+
+    free(buf);
+    char logbuf[48];
+    snprintf(logbuf, sizeof(logbuf), "Loaded %u queued messages", g_app.outbox_count);
+    app_log("Outbox", logbuf);
 }
 
 /*---------- Message envelope helpers ----------*/
@@ -556,8 +687,9 @@ static void process_stdin_command(char *cmd)
     }
     /* CMD:STATE — dump contacts and pending keys */
     else if (strcmp(cmd, "CMD:STATE") == 0) {
-        fprintf(stdout, "CMD:STATE:contacts=%u,pending=%u\n",
-               g_app.contact_count, g_app.pending_key_count);
+        fprintf(stdout, "CMD:STATE:contacts=%u,pending=%u,outbox=%u\n",
+               g_app.contact_count, g_app.pending_key_count,
+               g_app.outbox_count);
         fflush(stdout);
         for (uint32_t i = 0; i < g_app.contact_count; i++) {
             contact_t *c = &g_app.contacts[i];

@@ -17,6 +17,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include "../tweetnacl.h"
 
 /* TCP frame header */
 #pragma pack(push, 1)
@@ -158,6 +159,13 @@ static void process_fragment(transport_t *t, int client_idx,
     const uint8_t *payload = frag_data + sizeof(frag_header_t);
     size_t payload_len = frag_len - sizeof(frag_header_t);
 
+    /* Handle incoming ACK */
+    if (fh->flags & FRAG_FLAG_ACK) {
+        if (payload_len >= TRANSPORT_ACK_ID_LEN && t->callbacks.on_ack)
+            t->callbacks.on_ack(client_idx, payload);
+        return;
+    }
+
     if (fh->flags & FRAG_FLAG_START) {
         c->rx_len = 0;
         c->rx_expected_seq = 0;
@@ -189,7 +197,11 @@ static void process_fragment(transport_t *t, int client_idx,
     c->rx_expected_seq++;
 
     if (fh->flags & FRAG_FLAG_END) {
-        /* Complete message reassembled */
+        /* Complete message reassembled — send ACK back to sender */
+        uint8_t ack_id[TRANSPORT_ACK_ID_LEN];
+        transport_compute_msg_id(c->rx_buf, c->rx_len, ack_id);
+        transport_send_ack(t, client_idx, ack_id);
+
         if (t->callbacks.on_message)
             t->callbacks.on_message(client_idx, char_uuid,
                                     c->rx_buf, c->rx_len);
@@ -382,4 +394,24 @@ int transport_connected_count(const transport_t *t)
 void transport_set_callbacks(transport_t *t, transport_callbacks_t cbs)
 {
     t->callbacks = cbs;
+}
+
+void transport_compute_msg_id(const uint8_t *data, size_t len,
+                              uint8_t out[TRANSPORT_ACK_ID_LEN])
+{
+    uint8_t hash[crypto_hash_sha512_BYTES];
+    crypto_hash_sha512(hash, data, len);
+    memcpy(out, hash, TRANSPORT_ACK_ID_LEN);
+}
+
+bool transport_send_ack(transport_t *t, int client_idx,
+                        const uint8_t msg_id[TRANSPORT_ACK_ID_LEN])
+{
+    /* ACK frame: [flags=ACK][seq=0][msg_id (8 bytes)] */
+    uint8_t frag[sizeof(frag_header_t) + TRANSPORT_ACK_ID_LEN];
+    frag_header_t *fh = (frag_header_t *)frag;
+    fh->flags = FRAG_FLAG_ACK;
+    fh->seq = 0;
+    memcpy(frag + sizeof(frag_header_t), msg_id, TRANSPORT_ACK_ID_LEN);
+    return transport_send_raw(t, client_idx, CHAR_UUID_TX, frag, sizeof(frag));
 }

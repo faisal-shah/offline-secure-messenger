@@ -7,7 +7,9 @@ import kotlinx.coroutines.flow.StateFlow
 data class CipherMessage(
     val text: String,
     val timestamp: Long = System.currentTimeMillis(),
-    val direction: Direction = Direction.FROM_OSM
+    val direction: Direction = Direction.FROM_OSM,
+    val msgId: String = "",      /* hex-encoded first 8 bytes of SHA-512 */
+    val delivered: Boolean = false  /* true when ACK received (TO_OSM only) */
 ) {
     enum class Direction { FROM_OSM, TO_OSM }
 }

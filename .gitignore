@@ -15,3 +15,4 @@ tests/data_*.json
 data_contacts.json
 data_identity.json
 data_pending_keys.json
+data_outbox.json

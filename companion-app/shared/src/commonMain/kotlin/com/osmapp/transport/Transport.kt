@@ -31,4 +31,7 @@ interface Transport {
 
     /** Register a listener for device discovery. */
     fun onDeviceDiscovered(listener: (OsmDevice) -> Unit)
+
+    /** Register a listener for message delivery ACKs. */
+    fun onAck(listener: (deviceId: String, msgId: ByteArray) -> Unit)
 }
