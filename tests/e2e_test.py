@@ -2945,6 +2945,227 @@ def test_offline_message_persistence():
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
+def test_compose_navigates_to_conversation():
+    """Test 30: After sending from compose screen, OSM navigates to conversation."""
+    print("\n[Test 30] Compose → Conversation navigation")
+
+    import tempfile, shutil
+
+    work_dir = tempfile.mkdtemp(prefix="osm_compose_nav_")
+
+    def start_osm_in_dir(workdir, port):
+        env = os.environ.copy()
+        env["SDL_VIDEODRIVER"] = "dummy"
+        proc = subprocess.Popen(
+            [os.path.abspath(BINARY), "--port", str(port)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env, cwd=workdir,
+        )
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.5)
+                s.connect(("127.0.0.1", port))
+                s.close()
+                return proc
+            except (ConnectionRefusedError, OSError):
+                time.sleep(0.1)
+        return None
+
+    def send_cmd(proc, cmd, timeout=5.0):
+        import select
+        proc.stdin.write(f"{cmd}\n".encode())
+        proc.stdin.flush()
+        is_state = cmd.strip() == "CMD:STATE"
+        buf = b""
+        fd = proc.stdout.fileno()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.2)
+            if ready:
+                chunk = os.read(fd, 4096)
+                if not chunk: break
+                buf += chunk
+                text = buf.decode(errors="replace")
+                if is_state and "CMD:STATE:END" in text: break
+                for line in text.split("\n"):
+                    line = line.strip()
+                    if not is_state and line.startswith(("CMD:OK:", "CMD:ERR:", "CMD:IDENTITY:")):
+                        deadline = 0; break
+            if proc.poll() is not None: break
+        return "\n".join(l.strip() for l in buf.decode(errors="replace").split("\n") if l.strip().startswith("CMD:"))
+
+    proc = None
+    try:
+        import nacl.bindings
+
+        proc = start_osm_in_dir(work_dir, PORT_A)
+        assert proc, "OSM failed to start"
+
+        resp = send_cmd(proc, "CMD:KEYGEN")
+        assert "CMD:OK:keygen" in resp
+        resp = send_cmd(proc, "CMD:ADD:Peer1")
+        assert "CMD:OK:add:Peer1" in resp
+
+        ca = TcpClient(PORT_A, "CA")
+        assert ca.connect(), "CA failed to connect"
+        ca.poll(timeout=1.0)  # drain KEX
+
+        peer_sk = nacl.bindings.randombytes(32)
+        peer_pk = nacl.bindings.crypto_scalarmult_base(peer_sk)
+        ca.send_message(CHAR_UUID_RX, f"OSM:KEY:{base64.b64encode(peer_pk).decode()}".encode())
+        time.sleep(0.5)
+        resp = send_cmd(proc, "CMD:ASSIGN:Peer1")
+        assert "ESTABLISHED" in resp
+        print("  PASS: Contact established")
+
+        # Verify we're NOT on CONVERSATION screen yet
+        state = send_cmd(proc, "CMD:STATE")
+        assert "screen=CONVERSATION" not in state, f"Should not be on conversation yet: {state}"
+        print("  PASS: Not on CONVERSATION screen before compose")
+
+        # Compose and send — response should indicate CONVERSATION screen
+        resp = send_cmd(proc, "CMD:UI_COMPOSE:Peer1:Test navigation message")
+        assert "CMD:OK:ui_compose:Peer1:screen=CONVERSATION" in resp, f"Expected conversation nav: {resp}"
+        print("  PASS: CMD:UI_COMPOSE response indicates CONVERSATION screen")
+
+        # Verify via CMD:STATE that we're on CONVERSATION screen
+        state = send_cmd(proc, "CMD:STATE")
+        assert "screen=CONVERSATION" in state, f"Expected CONVERSATION screen after compose, got: {state}"
+        print("  PASS: CMD:STATE confirms CONVERSATION screen after compose")
+
+        # We should be able to send a reply directly (proving we're on conversation)
+        resp = send_cmd(proc, "CMD:UI_REPLY:Follow-up message")
+        assert "CMD:OK:ui_reply" in resp, f"Reply should work on conversation screen: {resp}"
+        print("  PASS: CMD:UI_REPLY works (confirms conversation screen)")
+
+        ca.disconnect()
+
+    finally:
+        if proc and proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=3)
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def test_ca_queue_while_disconnected():
+    """Test 31: CA Queue button works when disconnected — queued messages sent on reconnect."""
+    print("\n[Test 31] CA queue while disconnected — messages queued and sent on reconnect")
+
+    import tempfile, shutil
+
+    work_dir = tempfile.mkdtemp(prefix="osm_ca_queue_")
+
+    def start_osm_in_dir(workdir, port):
+        env = os.environ.copy()
+        env["SDL_VIDEODRIVER"] = "dummy"
+        proc = subprocess.Popen(
+            [os.path.abspath(BINARY), "--port", str(port)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env, cwd=workdir,
+        )
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.5)
+                s.connect(("127.0.0.1", port))
+                s.close()
+                return proc
+            except (ConnectionRefusedError, OSError):
+                time.sleep(0.1)
+        return None
+
+    def send_cmd(proc, cmd, timeout=5.0):
+        import select
+        proc.stdin.write(f"{cmd}\n".encode())
+        proc.stdin.flush()
+        is_state = cmd.strip() == "CMD:STATE"
+        buf = b""
+        fd = proc.stdout.fileno()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.2)
+            if ready:
+                chunk = os.read(fd, 4096)
+                if not chunk: break
+                buf += chunk
+                text = buf.decode(errors="replace")
+                if is_state and "CMD:STATE:END" in text: break
+                for line in text.split("\n"):
+                    line = line.strip()
+                    if not is_state and line.startswith(("CMD:OK:", "CMD:ERR:", "CMD:IDENTITY:")):
+                        deadline = 0; break
+            if proc.poll() is not None: break
+        return "\n".join(l.strip() for l in buf.decode(errors="replace").split("\n") if l.strip().startswith("CMD:"))
+
+    proc = None
+    try:
+        import nacl.bindings
+
+        proc = start_osm_in_dir(work_dir, PORT_A)
+        assert proc, "OSM failed to start"
+
+        resp = send_cmd(proc, "CMD:KEYGEN")
+        assert "CMD:OK:keygen" in resp
+        resp = send_cmd(proc, "CMD:ADD:QueuePeer")
+        assert "CMD:OK:add:QueuePeer" in resp
+
+        # Connect CA, establish contact
+        ca = TcpClient(PORT_A, "CA")
+        assert ca.connect(), "CA failed to connect"
+        ca.poll(timeout=1.0)  # drain KEX
+
+        peer_sk = nacl.bindings.randombytes(32)
+        peer_pk = nacl.bindings.crypto_scalarmult_base(peer_sk)
+        ca.send_message(CHAR_UUID_RX, f"OSM:KEY:{base64.b64encode(peer_pk).decode()}".encode())
+        time.sleep(0.5)
+        resp = send_cmd(proc, "CMD:ASSIGN:QueuePeer")
+        assert "ESTABLISHED" in resp
+        print("  PASS: Contact established")
+
+        # Disconnect CA
+        ca.disconnect()
+        time.sleep(0.5)
+        print("  PASS: CA disconnected")
+
+        # Queue 3 messages while CA is disconnected
+        for i in range(3):
+            resp = send_cmd(proc, f"CMD:UI_COMPOSE:QueuePeer:Queued msg {i+1}")
+            assert "CMD:OK:ui_compose" in resp
+        print("  PASS: 3 messages queued while CA disconnected")
+
+        # Verify outbox has 3 messages
+        state = send_cmd(proc, "CMD:STATE")
+        assert "outbox=3" in state, f"Expected outbox=3, got: {state}"
+        print("  PASS: Outbox count = 3")
+
+        # Reconnect CA — should receive all 3 queued messages
+        ca2 = TcpClient(PORT_A, "CA-reconnect")
+        assert ca2.connect(), "CA reconnect failed"
+        time.sleep(2.0)
+
+        msgs = ca2.poll(timeout=3.0)
+        msg_count = sum(1 for _, d in msgs if d.decode().startswith("OSM:MSG:"))
+        assert msg_count == 3, f"Expected 3 queued messages after reconnect, got {msg_count}"
+        print(f"  PASS: All 3 queued messages received after reconnect")
+
+        # Wait for ACKs to clear outbox
+        time.sleep(1.5)
+        state = send_cmd(proc, "CMD:STATE")
+        assert "outbox=0" in state, f"Outbox should be empty after ACKs: {state}"
+        print("  PASS: Outbox cleared after ACKs")
+
+        ca2.disconnect()
+
+    finally:
+        if proc and proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=3)
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
 def main():
     if not os.path.isfile(BINARY):
         print(f"ERROR: OSM binary not found at {BINARY}")
@@ -2985,6 +3206,8 @@ def main():
         test_message_ordering,
         test_ack_removes_from_outbox,
         test_offline_message_persistence,
+        test_compose_navigates_to_conversation,
+        test_ca_queue_while_disconnected,
     ]
 
     passed = 0

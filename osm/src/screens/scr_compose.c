@@ -63,13 +63,12 @@ static void send_cb(lv_event_t *e)
         snprintf(ctx, sizeof(ctx), "Encrypted Msg -> %s", c->name);
         app_log(ctx, msg->ciphertext);
 
-        char status_text[128];
-        snprintf(status_text, sizeof(status_text),
-                 LV_SYMBOL_OK " Sent to %s\n(%.20s...)", c->name, msg->ciphertext);
-        lv_label_set_text(status_lbl, status_text);
-        lv_obj_set_style_text_color(status_lbl, lv_color_hex(0x00E676), 0);
-
         lv_textarea_set_text(msg_ta, "");
+
+        /* Navigate to conversation thread for this contact */
+        g_app.selected_contact_id = c->id;
+        app_navigate_to(SCR_CONVERSATION);
+        scr_conversation_refresh();
     }
 }
 

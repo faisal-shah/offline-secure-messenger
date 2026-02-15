@@ -291,7 +291,7 @@ fun DeviceDetailPanel(
                         inputText = ""
                     }
                 },
-                enabled = device.state == ConnectionState.CONNECTED && inputText.isNotBlank(),
+                enabled = inputText.isNotBlank(),
                 colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
             ) {
                 Text(

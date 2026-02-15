@@ -101,6 +101,14 @@ fun main(args: Array<String>) {
                     state = if (connected) ConnectionState.CONNECTED else ConnectionState.DISCONNECTED
                 ) else it
             }
+            if (connected) {
+                // Flush undelivered outbox messages on reconnect
+                val dev = devices.find { it.id == deviceId }
+                dev?.outbox?.filter { !it.delivered }?.forEach { msg ->
+                    val data = msg.text.toByteArray(Charsets.UTF_8)
+                    scope.launch { transport.send(deviceId, data) }
+                }
+            }
         }
 
         transport.startDiscovery()
@@ -151,8 +159,11 @@ fun main(args: Array<String>) {
                     ) else it
                 }
                 persistDevice(deviceId)
-                scope.launch {
-                    transport.send(deviceId, data)
+                val dev = devices.find { it.id == deviceId }
+                if (dev?.state == ConnectionState.CONNECTED) {
+                    scope.launch {
+                        transport.send(deviceId, data)
+                    }
                 }
             }
         )

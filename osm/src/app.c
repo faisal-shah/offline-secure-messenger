@@ -687,9 +687,15 @@ static void process_stdin_command(char *cmd)
     }
     /* CMD:STATE — dump contacts and pending keys */
     else if (strcmp(cmd, "CMD:STATE") == 0) {
-        fprintf(stdout, "CMD:STATE:contacts=%u,pending=%u,outbox=%u\n",
+        static const char *scr_names[] = {
+            "SETUP","HOME","CONTACTS","KEY_EXCHANGE",
+            "COMPOSE","INBOX","CONVERSATION","ASSIGN_KEY"
+        };
+        const char *scr_name = (g_app.current_screen < SCR_COUNT) ?
+            scr_names[g_app.current_screen] : "UNKNOWN";
+        fprintf(stdout, "CMD:STATE:contacts=%u,pending=%u,outbox=%u,screen=%s\n",
                g_app.contact_count, g_app.pending_key_count,
-               g_app.outbox_count);
+               g_app.outbox_count, scr_name);
         fflush(stdout);
         for (uint32_t i = 0; i < g_app.contact_count; i++) {
             contact_t *c = &g_app.contacts[i];
@@ -856,11 +862,12 @@ static void process_stdin_command(char *cmd)
         lv_textarea_set_text(scr_compose_get_msg_ta(), text);
         lv_timer_handler();
 
-        /* Click send → send_cb fires → encrypts + outbox_enqueue + flush */
+        /* Click send → send_cb fires → encrypts + outbox_enqueue + flush
+         * send_cb navigates to SCR_CONVERSATION for this contact */
         lv_obj_send_event(scr_compose_get_send_btn(), LV_EVENT_CLICKED, NULL);
         lv_timer_handler();
 
-        printf("CMD:OK:ui_compose:%s\n", name);
+        printf("CMD:OK:ui_compose:%s:screen=CONVERSATION\n", name);
         fflush(stdout);
     }
     /* CMD:UI_REPLY:<text> — On conversation screen → type reply → send */
