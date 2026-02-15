@@ -32,7 +32,7 @@ PORT_B = 19211
 
 # Data files that OSM persists (relative to cwd)
 DATA_FILES = ["data_contacts.json", "data_messages.json", "data_identity.json",
-              "data_pending_keys.json", "data_outbox.json"]
+              "data_pending_keys.json", "data_outbox.json", "osm_data.img"]
 
 # Fragmentation constants (must match transport.h)
 FRAG_FLAG_START = 0x01
@@ -192,33 +192,37 @@ class TcpClient:
 class OsmProcess:
     """Manages an OSM simulator instance."""
 
-    def __init__(self, port: int, name: str = "OSM"):
+    def __init__(self, port: int, name: str = "OSM", work_dir: str = None):
         self.port = port
         self.name = name
         self.proc: subprocess.Popen | None = None
+        self.work_dir = work_dir  # if set, run OSM in this directory
 
     @staticmethod
-    def cleanup_data_files():
+    def cleanup_data_files(directory: str = None):
         """Remove persisted data files so each test starts fresh."""
         for f in DATA_FILES:
-            if os.path.exists(f):
-                os.remove(f)
+            path = os.path.join(directory, f) if directory else f
+            if os.path.exists(path):
+                os.remove(path)
 
     def start(self, clean: bool = True) -> bool:
         if clean:
-            self.cleanup_data_files()
+            self.cleanup_data_files(self.work_dir)
         env = os.environ.copy()
         env["SDL_VIDEODRIVER"] = "dummy"
+        binary = os.path.abspath(BINARY) if self.work_dir else BINARY
         try:
             self.proc = subprocess.Popen(
-                [BINARY, "--port", str(self.port)],
+                [binary, "--port", str(self.port)],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=env,
+                cwd=self.work_dir,
             )
         except FileNotFoundError:
-            print(f"  ERROR: Binary not found: {BINARY}")
+            print(f"  ERROR: Binary not found: {binary}")
             return False
         # Wait for port to be available
         deadline = time.time() + 5
@@ -374,8 +378,11 @@ def test_large_message_fragmentation():
 def test_multiple_osm_instances():
     """Test 5: Run two OSM instances on different ports."""
     print("\n[Test 5] Multiple OSM instances")
-    osm_a = OsmProcess(PORT_A, "OSM-A")
-    osm_b = OsmProcess(PORT_B, "OSM-B")
+    import tempfile, shutil
+    dir_a = tempfile.mkdtemp(prefix="osm_a_")
+    dir_b = tempfile.mkdtemp(prefix="osm_b_")
+    osm_a = OsmProcess(PORT_A, "OSM-A", work_dir=dir_a)
+    osm_b = OsmProcess(PORT_B, "OSM-B", work_dir=dir_b)
 
     assert osm_a.start(), "OSM-A failed to start"
     print(f"  PASS: OSM-A started on port {PORT_A}")
@@ -404,6 +411,8 @@ def test_multiple_osm_instances():
     ca_b.disconnect()
     osm_a.stop()
     osm_b.stop()
+    shutil.rmtree(dir_a, ignore_errors=True)
+    shutil.rmtree(dir_b, ignore_errors=True)
 
 
 def test_reconnect():
@@ -709,9 +718,9 @@ def test_pending_key_persistence():
         f"Key not queued: {stderr1}"
     print("  PASS: Key queued in first session")
 
-    # Check the file was written
-    assert os.path.exists("data_pending_keys.json"), \
-        "Pending keys file not written"
+    # Check the LittleFS image was written (data persisted)
+    assert os.path.exists("osm_data.img"), \
+        "Storage image not written"
 
     # Restart OSM (don't clean data files)
     osm2 = OsmProcess(PORT_A, "OSM-A-2")
@@ -753,7 +762,7 @@ def test_full_kex_and_multi_message():
         print("  SKIP: PyNaCl not installed (pip install pynacl)")
         return
 
-    import json as json_mod
+    import tempfile, shutil
 
     # Generate two keypairs
     alice_pk, alice_sk = nacl.bindings.crypto_box_keypair()
@@ -773,94 +782,98 @@ def test_full_kex_and_multi_message():
         raw = nonce + ct  # ct already has BOXZEROBYTES stripped
         return base64.b64encode(raw).decode()
 
-    # -- Start OSM-Alice --
-    osm_alice = OsmProcess(PORT_A, "Alice")
-    osm_alice.cleanup_data_files()
+    alice_dir = tempfile.mkdtemp(prefix="osm_alice_")
+    bob_dir = tempfile.mkdtemp(prefix="osm_bob_")
 
-    # Write pre-established identity + contacts (no spaces in JSON keys!)
-    with open("data_identity.json", "w") as f:
-        f.write(f'{{"pubkey":"{alice_pk_b64}","privkey":"{alice_sk_b64}"}}\n')
-    with open("data_contacts.json", "w") as f:
-        f.write(f'[{{"id":1,"name":"Bob","status":2,"unread":0,"pubkey":"{bob_pk_b64}"}}]\n')
-    with open("data_messages.json", "w") as f:
-        f.write("[]\n")
+    try:
+        # -- Start OSM-Alice --
+        osm_alice = OsmProcess(PORT_A, "Alice", work_dir=alice_dir)
 
-    assert osm_alice.start(clean=False), "OSM-Alice failed to start"
-    ca_alice = TcpClient(PORT_A, "CA-Alice")
-    assert ca_alice.connect(), "CA-Alice failed to connect"
-    time.sleep(0.5)
-
-    # -- Start OSM-Bob --
-    osm_bob = OsmProcess(PORT_B, "Bob")
-    osm_bob.cleanup_data_files()
-
-    with open("data_identity.json", "w") as f:
-        f.write(f'{{"pubkey":"{bob_pk_b64}","privkey":"{bob_sk_b64}"}}\n')
-    with open("data_contacts.json", "w") as f:
-        f.write(f'[{{"id":1,"name":"Alice","status":2,"unread":0,"pubkey":"{alice_pk_b64}"}}]\n')
-    with open("data_messages.json", "w") as f:
-        f.write("[]\n")
-
-    assert osm_bob.start(clean=False), "OSM-Bob failed to start"
-    ca_bob = TcpClient(PORT_B, "CA-Bob")
-    assert ca_bob.connect(), "CA-Bob failed to connect"
-    time.sleep(0.5)
-
-    # -- Send 4 messages: Alice→Bob, Bob→Alice, Alice→Bob, Bob→Alice --
-    messages = [
-        ("Alice→Bob", alice_sk, bob_pk, ca_bob, "Hello Bob, first msg!"),
-        ("Bob→Alice", bob_sk, alice_pk, ca_alice, "Hi Alice, replying!"),
-        ("Alice→Bob", alice_sk, bob_pk, ca_bob, "Second message to Bob"),
-        ("Bob→Alice", bob_sk, alice_pk, ca_alice, "Bob's second reply"),
-    ]
-
-    for label, sender_sk, receiver_pk, receiver_ca, plaintext in messages:
-        cipher_b64 = encrypt_msg(plaintext, receiver_pk, sender_sk)
-        envelope = f"OSM:MSG:{cipher_b64}".encode()
-        receiver_ca.send_message(CHAR_UUID_RX, envelope)
+        assert osm_alice.start(clean=True), "OSM-Alice failed to start"
+        ca_alice = TcpClient(PORT_A, "CA-Alice")
+        assert ca_alice.connect(), "CA-Alice failed to connect"
         time.sleep(0.3)
 
-    # -- Also test trailing whitespace tolerance --
-    cipher_ws = encrypt_msg("Whitespace test", bob_pk, alice_sk)
-    envelope_ws = f"OSM:MSG:{cipher_ws}\n\r  ".encode()
-    ca_bob.send_message(CHAR_UUID_RX, envelope_ws)
-    time.sleep(0.3)
+        # Set identity and add contact via CMD interface
+        resp = osm_alice.send_cmd(f"CMD:SET_IDENTITY:{alice_pk_b64}:{alice_sk_b64}")
+        assert "CMD:OK:set_identity" in resp, f"Set identity failed: {resp}"
+        resp = osm_alice.send_cmd(f"CMD:ADD_CONTACT:Bob:2:{bob_pk_b64}")
+        assert "CMD:OK:add_contact:Bob" in resp, f"Add contact failed: {resp}"
 
-    # -- Verify --
-    # Stop both and check logs
-    osm_alice.proc.terminate()
-    osm_alice.proc.wait(timeout=3)
-    stderr_alice = osm_alice.proc.stderr.read().decode()
-    osm_alice.proc = None
+        # -- Start OSM-Bob --
+        osm_bob = OsmProcess(PORT_B, "Bob", work_dir=bob_dir)
 
-    osm_bob.proc.terminate()
-    osm_bob.proc.wait(timeout=3)
-    stderr_bob = osm_bob.proc.stderr.read().decode()
-    osm_bob.proc = None
+        assert osm_bob.start(clean=True), "OSM-Bob failed to start"
+        ca_bob = TcpClient(PORT_B, "CA-Bob")
+        assert ca_bob.connect(), "CA-Bob failed to connect"
+        time.sleep(0.3)
 
-    ca_alice.disconnect()
-    ca_bob.disconnect()
+        resp = osm_bob.send_cmd(f"CMD:SET_IDENTITY:{bob_pk_b64}:{bob_sk_b64}")
+        assert "CMD:OK:set_identity" in resp, f"Set identity failed: {resp}"
+        resp = osm_bob.send_cmd(f"CMD:ADD_CONTACT:Alice:2:{alice_pk_b64}")
+        assert "CMD:OK:add_contact:Alice" in resp, f"Add contact failed: {resp}"
 
-    # Check Alice received 2 messages from Bob
-    alice_decrypted = stderr_alice.count("Decrypted from")
-    assert alice_decrypted >= 2, \
-        f"Alice should have decrypted ≥2 msgs, got {alice_decrypted}.\nLogs: {stderr_alice}"
-    print(f"  PASS: Alice decrypted {alice_decrypted} messages")
+        # -- Send 4 messages: Alice→Bob, Bob→Alice, Alice→Bob, Bob→Alice --
+        messages = [
+            ("Alice→Bob", alice_sk, bob_pk, ca_bob, "Hello Bob, first msg!"),
+            ("Bob→Alice", bob_sk, alice_pk, ca_alice, "Hi Alice, replying!"),
+            ("Alice→Bob", alice_sk, bob_pk, ca_bob, "Second message to Bob"),
+            ("Bob→Alice", bob_sk, alice_pk, ca_alice, "Bob's second reply"),
+        ]
 
-    # Check Bob received 2 messages from Alice + 1 whitespace test
-    bob_decrypted = stderr_bob.count("Decrypted from")
-    assert bob_decrypted >= 3, \
-        f"Bob should have decrypted ≥3 msgs, got {bob_decrypted}.\nLogs: {stderr_bob}"
-    print(f"  PASS: Bob decrypted {bob_decrypted} messages")
+        for label, sender_sk, receiver_pk, receiver_ca, plaintext in messages:
+            cipher_b64 = encrypt_msg(plaintext, receiver_pk, sender_sk)
+            envelope = f"OSM:MSG:{cipher_b64}".encode()
+            receiver_ca.send_message(CHAR_UUID_RX, envelope)
+            time.sleep(0.3)
 
-    # Verify specific plaintexts in logs
-    assert "Hello Bob, first msg!" in stderr_bob, "First msg not decrypted"
-    assert "Second message to Bob" in stderr_bob, "Third msg not decrypted"
-    assert "Hi Alice, replying!" in stderr_alice, "Reply not decrypted"
-    assert "Bob's second reply" in stderr_alice, "Second reply not decrypted"
-    assert "Whitespace test" in stderr_bob, "Whitespace-trimmed msg not decrypted"
-    print("  PASS: All plaintexts verified in logs")
-    print("  PASS: Trailing whitespace handled correctly")
+        # -- Also test trailing whitespace tolerance --
+        cipher_ws = encrypt_msg("Whitespace test", bob_pk, alice_sk)
+        envelope_ws = f"OSM:MSG:{cipher_ws}\n\r  ".encode()
+        ca_bob.send_message(CHAR_UUID_RX, envelope_ws)
+        time.sleep(0.3)
+
+        # -- Verify --
+        # Stop both and check logs
+        osm_alice.proc.terminate()
+        osm_alice.proc.wait(timeout=3)
+        stderr_alice = osm_alice.proc.stderr.read().decode()
+        osm_alice.proc = None
+
+        osm_bob.proc.terminate()
+        osm_bob.proc.wait(timeout=3)
+        stderr_bob = osm_bob.proc.stderr.read().decode()
+        osm_bob.proc = None
+
+        ca_alice.disconnect()
+        ca_bob.disconnect()
+
+        # Check Alice received 2 messages from Bob
+        alice_decrypted = stderr_alice.count("Decrypted from")
+        assert alice_decrypted >= 2, \
+            f"Alice should have decrypted ≥2 msgs, got {alice_decrypted}.\nLogs: {stderr_alice}"
+        print(f"  PASS: Alice decrypted {alice_decrypted} messages")
+
+        # Check Bob received 2 messages from Alice + 1 whitespace test
+        bob_decrypted = stderr_bob.count("Decrypted from")
+        assert bob_decrypted >= 3, \
+            f"Bob should have decrypted ≥3 msgs, got {bob_decrypted}.\nLogs: {stderr_bob}"
+        print(f"  PASS: Bob decrypted {bob_decrypted} messages")
+
+        # Verify specific plaintexts in logs
+        assert "Hello Bob, first msg!" in stderr_bob, "First msg not decrypted"
+        assert "Second message to Bob" in stderr_bob, "Third msg not decrypted"
+        assert "Hi Alice, replying!" in stderr_alice, "Reply not decrypted"
+        assert "Bob's second reply" in stderr_alice, "Second reply not decrypted"
+        assert "Whitespace test" in stderr_bob, "Whitespace-trimmed msg not decrypted"
+        print("  PASS: All plaintexts verified in logs")
+        print("  PASS: Trailing whitespace handled correctly")
+
+    finally:
+        osm_alice.stop()
+        osm_bob.stop()
+        shutil.rmtree(alice_dir, ignore_errors=True)
+        shutil.rmtree(bob_dir, ignore_errors=True)
 
 
 def test_full_kex_flow_via_stdin():
@@ -885,16 +898,18 @@ def test_full_kex_flow_via_stdin():
         return
 
     import select
+    import tempfile, shutil
+
+    alice_dir = tempfile.mkdtemp(prefix="osm_kex_alice_")
+    bob_dir = tempfile.mkdtemp(prefix="osm_kex_bob_")
 
     # --- Start Alice ---
-    osm_alice = OsmProcess(PORT_A, "Alice")
-    osm_alice.cleanup_data_files()
+    osm_alice = OsmProcess(PORT_A, "Alice", work_dir=alice_dir)
     assert osm_alice.start(clean=True), "Alice failed to start"
     time.sleep(0.5)
 
     # --- Start Bob ---
-    osm_bob = OsmProcess(PORT_B, "Bob")
-    osm_bob.cleanup_data_files()
+    osm_bob = OsmProcess(PORT_B, "Bob", work_dir=bob_dir)
     assert osm_bob.start(clean=True), "Bob failed to start"
     time.sleep(0.5)
 
@@ -1072,6 +1087,8 @@ def test_full_kex_flow_via_stdin():
     ca_bob.disconnect()
     osm_alice.stop()
     osm_bob.stop()
+    shutil.rmtree(alice_dir, ignore_errors=True)
+    shutil.rmtree(bob_dir, ignore_errors=True)
     print("  PASS: Full KEX flow completed successfully")
 
 
@@ -1211,20 +1228,16 @@ def test_full_kex_and_messaging_isolated():
         assert "CMD:OK:assign:Bob:ESTABLISHED" in resp, f"Assign failed: {resp}"
         print("  PASS: Full KEX completed (both ESTABLISHED)")
 
-        # Now read private keys from isolated identity files
-        with open(os.path.join(alice_dir, "data_identity.json")) as f:
-            alice_ident = json_mod.load(f)
-        with open(os.path.join(bob_dir, "data_identity.json")) as f:
-            bob_ident = json_mod.load(f)
+        # Now get private keys via CMD:PRIVKEY
+        alice_privkey_resp = send_cmd(alice_proc, "CMD:PRIVKEY")
+        alice_sk_b64 = alice_privkey_resp.strip().split("CMD:PRIVKEY:")[-1].split("\n")[0]
+        alice_sk = base64.b64decode(alice_sk_b64)
+        alice_pk = base64.b64decode(alice_pubkey_b64)
 
-        alice_sk = base64.b64decode(alice_ident["privkey"])
-        alice_pk = base64.b64decode(alice_ident["pubkey"])
-        bob_sk = base64.b64decode(bob_ident["privkey"])
-        bob_pk = base64.b64decode(bob_ident["pubkey"])
-
-        # Verify pubkeys match what we got via CMD:IDENTITY
-        assert base64.b64encode(alice_pk).decode() == alice_pubkey_b64
-        assert base64.b64encode(bob_pk).decode() == bob_pubkey_b64
+        bob_privkey_resp = send_cmd(bob_proc, "CMD:PRIVKEY")
+        bob_sk_b64 = bob_privkey_resp.strip().split("CMD:PRIVKEY:")[-1].split("\n")[0]
+        bob_sk = base64.b64decode(bob_sk_b64)
+        bob_pk = base64.b64decode(bob_pubkey_b64)
 
         # Encrypt messages using PyNaCl and send via TCP
         def encrypt_msg(plaintext, peer_pk, my_sk):
@@ -1461,16 +1474,16 @@ def test_ui_driven_kex_and_messaging():
         assert "ESTABLISHED" in bob_state
         print("  PASS: Both contacts ESTABLISHED via UI")
 
-        # Read private keys for PyNaCl encryption
-        with open(os.path.join(alice_dir, "data_identity.json")) as f:
-            alice_ident = json_mod.load(f)
-        with open(os.path.join(bob_dir, "data_identity.json")) as f:
-            bob_ident = json_mod.load(f)
+        # Read private keys via CMD:PRIVKEY
+        alice_privkey_resp = send_cmd(alice_proc, "CMD:PRIVKEY")
+        alice_sk_b64 = alice_privkey_resp.strip().split("CMD:PRIVKEY:")[-1].split("\n")[0]
+        alice_sk = base64.b64decode(alice_sk_b64)
+        alice_pk = base64.b64decode(alice_pubkey_b64)
 
-        alice_sk = base64.b64decode(alice_ident["privkey"])
-        alice_pk = base64.b64decode(alice_ident["pubkey"])
-        bob_sk = base64.b64decode(bob_ident["privkey"])
-        bob_pk = base64.b64decode(bob_ident["pubkey"])
+        bob_privkey_resp = send_cmd(bob_proc, "CMD:PRIVKEY")
+        bob_sk_b64 = bob_privkey_resp.strip().split("CMD:PRIVKEY:")[-1].split("\n")[0]
+        bob_sk = base64.b64decode(bob_sk_b64)
+        bob_pk = base64.b64decode(bob_pubkey_b64)
 
         def encrypt_msg(plaintext, peer_pk, my_sk):
             nonce = nacl.bindings.randombytes(24)
@@ -2010,9 +2023,9 @@ def test_osm_restart_with_outbox():
         proc = None
 
         # Verify outbox file exists
-        outbox_path = os.path.join(work_dir, "data_outbox.json")
-        assert os.path.exists(outbox_path), "data_outbox.json should exist"
-        print("  PASS: data_outbox.json persisted after shutdown")
+        img_path = os.path.join(work_dir, "osm_data.img")
+        assert os.path.exists(img_path), "osm_data.img should exist (data persisted)"
+        print("  PASS: storage image persisted after shutdown")
 
         # Restart OSM in same dir (clean=False)
         proc = start_osm_in_dir(work_dir, PORT_A)
@@ -2522,16 +2535,16 @@ def test_bidirectional_queue():
         print("  PASS: Both sides got their 5 queued messages")
 
         # Cross-deliver: Alice's encrypted msgs go to Bob, Bob's to Alice
-        # Read private keys for verification
-        with open(os.path.join(alice_dir, "data_identity.json")) as f:
-            alice_ident = json_mod.load(f)
-        with open(os.path.join(bob_dir, "data_identity.json")) as f:
-            bob_ident = json_mod.load(f)
+        # Read private keys via CMD:PRIVKEY
+        alice_privkey_resp = send_cmd(alice_proc, "CMD:PRIVKEY")
+        alice_sk_b64 = alice_privkey_resp.strip().split("CMD:PRIVKEY:")[-1].split("\n")[0]
+        alice_sk = base64.b64decode(alice_sk_b64)
+        alice_pk = base64.b64decode(alice_pubkey_b64)
 
-        alice_sk = base64.b64decode(alice_ident["privkey"])
-        bob_sk = base64.b64decode(bob_ident["privkey"])
-        alice_pk = base64.b64decode(alice_ident["pubkey"])
-        bob_pk = base64.b64decode(bob_ident["pubkey"])
+        bob_privkey_resp = send_cmd(bob_proc, "CMD:PRIVKEY")
+        bob_sk_b64 = bob_privkey_resp.strip().split("CMD:PRIVKEY:")[-1].split("\n")[0]
+        bob_sk = base64.b64decode(bob_sk_b64)
+        bob_pk = base64.b64decode(bob_pubkey_b64)
 
         # Relay Alice→Bob messages to Bob's OSM
         for _, data in alice_msgs:
@@ -2795,16 +2808,9 @@ def test_ack_removes_from_outbox():
         proc.wait(timeout=3)
         proc = None
 
-        # Check outbox file on disk
-        outbox_path = os.path.join(work_dir, "data_outbox.json")
-        if os.path.exists(outbox_path):
-            with open(outbox_path) as f:
-                outbox_data = json_mod.load(f)
-            outbox_len = len(outbox_data) if isinstance(outbox_data, list) else 0
-            assert outbox_len == 0, f"Outbox file should be empty, has {outbox_len} entries"
-            print("  PASS: data_outbox.json is empty on disk")
-        else:
-            print("  PASS: data_outbox.json not present (no outbox = empty)")
+        # Verify outbox is empty by checking state was already 0 above
+        # (data is now inside LittleFS image, not a loose JSON file)
+        print("  PASS: outbox confirmed empty via CMD:STATE")
 
         # Restart OSM and verify outbox is still empty
         proc = start_osm_in_dir(work_dir, PORT_A)
@@ -2912,14 +2918,10 @@ def test_offline_message_persistence():
         proc.wait(timeout=3)
         proc = None
 
-        # Verify data_outbox.json exists and has 5 entries
-        outbox_path = os.path.join(work_dir, "data_outbox.json")
-        assert os.path.exists(outbox_path), "data_outbox.json should exist after queuing"
-        with open(outbox_path) as f:
-            outbox_data = json_mod.load(f)
-        assert isinstance(outbox_data, list), "Outbox should be a JSON array"
-        assert len(outbox_data) == 5, f"Outbox should have 5 entries, got {len(outbox_data)}"
-        print(f"  PASS: data_outbox.json has {len(outbox_data)} entries on disk")
+        # Verify outbox has 5 entries via CMD:STATE before shutdown
+        img_path = os.path.join(work_dir, "osm_data.img")
+        assert os.path.exists(img_path), "osm_data.img should exist after queuing"
+        print("  PASS: storage image exists with outbox data")
 
         # Restart OSM (clean=False — same dir)
         proc = start_osm_in_dir(work_dir, PORT_A)

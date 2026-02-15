@@ -1,4 +1,5 @@
 #include "contacts.h"
+#include "../hal/hal_storage_util.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -7,18 +8,9 @@
 
 void contacts_load(void)
 {
-    FILE *f = fopen(CONTACTS_FILE, "r");
-    if (!f) return;
-
-    fseek(f, 0, SEEK_END);
-    long len = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (len <= 0) { fclose(f); return; }
-
-    char *buf = malloc(len + 1);
-    fread(buf, 1, len, f);
-    buf[len] = '\0';
-    fclose(f);
+    size_t len = 0;
+    char *buf = hal_storage_read_file(CONTACTS_FILE, &len);
+    if (!buf) return;
 
     /* Simple JSON-ish parser — one contact per line block */
     g_app.contact_count = 0;
@@ -75,20 +67,21 @@ void contacts_load(void)
 
 void contacts_save(void)
 {
-    FILE *f = fopen(CONTACTS_FILE, "w");
-    if (!f) return;
+    char buf[8192];
+    int pos = 0;
 
-    fprintf(f, "[\n");
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "[\n");
     for (uint32_t i = 0; i < g_app.contact_count; i++) {
         contact_t *c = &g_app.contacts[i];
-        fprintf(f, "  {\"id\":%u, \"name\":\"%s\", \"status\":%d, \"unread\":%u, "
-                   "\"pubkey\":\"%s\"}%s\n",
+        pos += snprintf(buf + pos, sizeof(buf) - pos,
+                "  {\"id\":%u, \"name\":\"%s\", \"status\":%d, \"unread\":%u, "
+                "\"pubkey\":\"%s\"}%s\n",
                 c->id, c->name, c->status, c->unread_count,
                 c->public_key,
                 (i < g_app.contact_count - 1) ? "," : "");
     }
-    fprintf(f, "]\n");
-    fclose(f);
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "]\n");
+    hal_storage_write_file(CONTACTS_FILE, buf, (size_t)pos);
 }
 
 contact_t *contacts_add(const char *name)

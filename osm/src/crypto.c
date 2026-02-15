@@ -1,36 +1,15 @@
 #include "crypto.h"
 #include "tweetnacl.h"
+#include "hal/hal_rng.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 
-/* ---- randombytes (required by TweetNaCl) ---- */
-#ifdef _WIN32
-#include <windows.h>
-#include <wincrypt.h>
+/* ---- randombytes (required by TweetNaCl) — delegates to HAL ---- */
 void randombytes(unsigned char *buf, unsigned long long len)
 {
-    HCRYPTPROV prov;
-    CryptAcquireContext(&prov, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT);
-    CryptGenRandom(prov, (DWORD)len, buf);
-    CryptReleaseContext(prov, 0);
+    hal_random_bytes(buf, (size_t)len);
 }
-#else
-#include <fcntl.h>
-#include <unistd.h>
-void randombytes(unsigned char *buf, unsigned long long len)
-{
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd < 0) return;
-    while (len > 0) {
-        ssize_t n = read(fd, buf, (size_t)len);
-        if (n <= 0) break;
-        buf += n;
-        len -= (unsigned long long)n;
-    }
-    close(fd);
-}
-#endif
 
 /* ---- Base64 ---- */
 static const char b64_table[] =

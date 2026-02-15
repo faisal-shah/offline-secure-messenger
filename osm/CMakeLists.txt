@@ -16,6 +16,14 @@ pkg_check_modules(SDL2 REQUIRED sdl2)
 # Transport backend selection
 option(TRANSPORT_BLE "Use BlueZ BLE transport instead of TCP" OFF)
 
+# LittleFS sources
+set(LFS_SOURCES
+    littlefs/lfs.c
+    littlefs/lfs_util.c
+    littlefs/bd/lfs_filebd.c
+    littlefs/bd/lfs_rambd.c
+)
+
 # Main executable
 file(GLOB_RECURSE APP_SOURCES
     "src/*.c"
@@ -28,11 +36,12 @@ else()
     list(FILTER APP_SOURCES EXCLUDE REGEX "transport_ble\\.c$")
 endif()
 
-add_executable(${PROJECT_NAME} ${APP_SOURCES})
+add_executable(${PROJECT_NAME} ${APP_SOURCES} ${LFS_SOURCES})
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/littlefs
     ${SDL2_INCLUDE_DIRS}
 )
 
@@ -50,5 +59,7 @@ endif()
 
 target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
-# Suppress warnings from TweetNaCl (public domain, vendored as-is)
+# Suppress warnings from vendored code
 set_source_files_properties(src/tweetnacl.c PROPERTIES COMPILE_FLAGS "-w")
+set_source_files_properties(littlefs/lfs.c PROPERTIES COMPILE_FLAGS "-w")
+set_source_files_properties(littlefs/lfs_util.c PROPERTIES COMPILE_FLAGS "-w")

@@ -1,4 +1,5 @@
 #include "identity.h"
+#include "../hal/hal_storage_util.h"
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
@@ -30,21 +31,20 @@ bool identity_load(crypto_identity_t *id)
     memset(id, 0, sizeof(*id));
     id->valid = false;
 
-    FILE *f = fopen(IDENTITY_FILE, "r");
-    if (!f) return false;
-
-    char buf[512];
-    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-    fclose(f);
-    buf[n] = '\0';
+    size_t n = 0;
+    char *buf = hal_storage_read_file(IDENTITY_FILE, &n);
+    if (!buf) return false;
 
     char pubkey_b64[CRYPTO_PUBKEY_B64_SIZE];
     char privkey_b64[CRYPTO_PUBKEY_B64_SIZE]; /* same size for 32 bytes */
 
     if (!extract_json_string(buf, "pubkey", pubkey_b64, sizeof(pubkey_b64)) ||
         !extract_json_string(buf, "privkey", privkey_b64, sizeof(privkey_b64))) {
+        free(buf);
         return false;
     }
+
+    free(buf);
 
     size_t pub_len = 0, priv_len = 0;
     if (!crypto_b64_decode(pubkey_b64, id->pubkey, CRYPTO_PUBKEY_BYTES, &pub_len) ||
@@ -62,16 +62,15 @@ bool identity_load(crypto_identity_t *id)
 
 void identity_save(const crypto_identity_t *id)
 {
-    FILE *f = fopen(IDENTITY_FILE, "w");
-    if (!f) return;
-
     char pubkey_b64[CRYPTO_PUBKEY_B64_SIZE];
     char privkey_b64[CRYPTO_PUBKEY_B64_SIZE];
     crypto_pubkey_to_b64(id->pubkey, pubkey_b64, sizeof(pubkey_b64));
     crypto_b64_encode(id->privkey, CRYPTO_PRIVKEY_BYTES,
                       privkey_b64, sizeof(privkey_b64));
 
-    fprintf(f, "{\n  \"pubkey\": \"%s\",\n  \"privkey\": \"%s\"\n}\n",
+    char buf[256];
+    int len = snprintf(buf, sizeof(buf),
+            "{\n  \"pubkey\": \"%s\",\n  \"privkey\": \"%s\"\n}\n",
             pubkey_b64, privkey_b64);
-    fclose(f);
+    hal_storage_write_file(IDENTITY_FILE, buf, (size_t)len);
 }

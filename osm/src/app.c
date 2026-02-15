@@ -10,18 +10,27 @@
 #include "screens/scr_inbox.h"
 #include "screens/scr_conversation.h"
 #include "screens/scr_assign_key.h"
+#include "hal/hal_log.h"
+#include "hal/hal_storage.h"
+#include "hal/hal_storage_util.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <time.h>
+
+#ifndef OSM_MCU_BUILD
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#endif
 
 app_state_t g_app;
 
 /* Forward declarations for test driver */
+#ifndef OSM_MCU_BUILD
 static void test_driver_init(void);
 
 /*---------- Screenshot helper (via SDL renderer) ----------*/
@@ -68,16 +77,12 @@ void app_take_screenshot(const char *name)
     SDL_FreeSurface(surface);
     printf("  SCREENSHOT: %s\n", path);
 }
+#endif /* !OSM_MCU_BUILD */
 
 /*---------- Logging ----------*/
 void app_log(const char *context, const char *data)
 {
-    time_t now = time(NULL);
-    struct tm *tm = localtime(&now);
-    char ts[16];
-    strftime(ts, sizeof(ts), "%H:%M:%S", tm);
-    fprintf(stderr, "[%s] %s: %.60s%s\n",
-            ts, context, data, strlen(data) > 60 ? "..." : "");
+    hal_log(context, data);
 }
 
 /*---------- Transport callbacks ----------*/
@@ -258,7 +263,14 @@ void app_init(lv_display_t *disp,
     if (name && name[0])
         strncpy(g_app.device_name, name, sizeof(g_app.device_name) - 1);
 
+    /* Initialize storage (LittleFS) */
+    if (!hal_storage_init(".")) {
+        fprintf(stderr, "FATAL: Could not init storage\n");
+    }
+
+#ifndef OSM_MCU_BUILD
     mkdir("screenshots", 0755);
+#endif
 
     /* Load persisted data */
     identity_load(&g_app.identity);
@@ -329,6 +341,7 @@ void app_deinit(void)
     contacts_save();
     messages_save();
     app_outbox_save();
+    hal_storage_deinit();
 }
 
 bool app_should_quit(void)
@@ -404,38 +417,28 @@ void app_transport_poll(void)
 
 void app_outbox_save(void)
 {
-    FILE *f = fopen(OUTBOX_FILE, "w");
-    if (!f) return;
-    fprintf(f, "[\n");
+    char buf[8192];
+    int pos = 0;
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "[\n");
     for (uint32_t i = 0; i < g_app.outbox_count; i++) {
         outbox_entry_t *e = &g_app.outbox[i];
-        /* Encode msg_id as hex */
         char hex[TRANSPORT_ACK_ID_LEN * 2 + 1];
         for (int k = 0; k < TRANSPORT_ACK_ID_LEN; k++)
             snprintf(hex + k * 2, 3, "%02x", e->msg_id[k]);
-        fprintf(f, "  {\"uuid\":%u,\"id\":\"%s\",\"data\":\"%s\"}%s\n",
+        pos += snprintf(buf + pos, sizeof(buf) - pos,
+                "  {\"uuid\":%u,\"id\":\"%s\",\"data\":\"%s\"}%s\n",
                 e->char_uuid, hex, e->data,
                 (i < g_app.outbox_count - 1) ? "," : "");
     }
-    fprintf(f, "]\n");
-    fclose(f);
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "]\n");
+    hal_storage_write_file(OUTBOX_FILE, buf, (size_t)pos);
 }
 
 void app_outbox_load(void)
 {
-    FILE *f = fopen(OUTBOX_FILE, "r");
-    if (!f) return;
-
-    fseek(f, 0, SEEK_END);
-    long len = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (len <= 0) { fclose(f); return; }
-
-    char *buf = malloc(len + 1);
-    if (!buf) { fclose(f); return; }
-    fread(buf, 1, len, f);
-    buf[len] = '\0';
-    fclose(f);
+    size_t len = 0;
+    char *buf = hal_storage_read_file(OUTBOX_FILE, &len);
+    if (!buf) return;
 
     g_app.outbox_count = 0;
     const char *p = buf;
@@ -526,33 +529,25 @@ void app_pending_key_remove(uint32_t index)
 
 void app_pending_keys_save(void)
 {
-    FILE *f = fopen(PENDING_KEYS_FILE, "w");
-    if (!f) return;
-    fprintf(f, "[\n");
+    char buf[4096];
+    int pos = 0;
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "[\n");
     for (uint32_t i = 0; i < g_app.pending_key_count; i++) {
         pending_key_t *pk = &g_app.pending_keys[i];
-        fprintf(f, "  {\"pubkey\":\"%s\", \"received\":%ld}%s\n",
+        pos += snprintf(buf + pos, sizeof(buf) - pos,
+                "  {\"pubkey\":\"%s\", \"received\":%ld}%s\n",
                 pk->pubkey_b64, (long)pk->received_at,
                 (i < g_app.pending_key_count - 1) ? "," : "");
     }
-    fprintf(f, "]\n");
-    fclose(f);
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "]\n");
+    hal_storage_write_file(PENDING_KEYS_FILE, buf, (size_t)pos);
 }
 
 void app_pending_keys_load(void)
 {
-    FILE *f = fopen(PENDING_KEYS_FILE, "r");
-    if (!f) return;
-
-    fseek(f, 0, SEEK_END);
-    long len = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (len <= 0) { fclose(f); return; }
-
-    char *buf = malloc(len + 1);
-    fread(buf, 1, len, f);
-    buf[len] = '\0';
-    fclose(f);
+    size_t len = 0;
+    char *buf = hal_storage_read_file(PENDING_KEYS_FILE, &len);
+    if (!buf) return;
 
     g_app.pending_key_count = 0;
     const char *p = buf;
@@ -578,6 +573,7 @@ void app_pending_keys_load(void)
     free(buf);
 }
 
+#ifndef OSM_MCU_BUILD
 /*---------- Non-blocking stdin command processing ----------*/
 static bool stdin_nonblock_set = false;
 
@@ -720,6 +716,18 @@ static void process_stdin_command(char *cmd)
         printf("CMD:IDENTITY:%s\n", b64);
         fflush(stdout);
     }
+    /* CMD:PRIVKEY — dump private key (test mode only) */
+    else if (strcmp(cmd, "CMD:PRIVKEY") == 0) {
+        if (!g_app.identity.valid) {
+            printf("CMD:ERR:no_identity\n");
+        } else {
+            char b64[128];
+            int len = crypto_b64_encode(g_app.identity.privkey, 32, b64, sizeof(b64));
+            b64[len] = '\0';
+            printf("CMD:PRIVKEY:%s\n", b64);
+        }
+        fflush(stdout);
+    }
     /* CMD:KEYGEN — generate keypair (if not already valid) */
     else if (strcmp(cmd, "CMD:KEYGEN") == 0) {
         if (g_app.identity.valid) {
@@ -731,6 +739,55 @@ static void process_stdin_command(char *cmd)
             scr_home_refresh();
             printf("CMD:OK:keygen:generated\n");
         }
+        fflush(stdout);
+    }
+    /* CMD:SET_IDENTITY:<pubkey_b64>:<privkey_b64> — import identity (test) */
+    else if (strncmp(cmd, "CMD:SET_IDENTITY:", 17) == 0) {
+        const char *rest = cmd + 17;
+        const char *sep = strchr(rest, ':');
+        if (!sep) { printf("CMD:ERR:set_identity_syntax\n"); fflush(stdout); return; }
+        char pub_b64[128], priv_b64[128];
+        size_t plen = sep - rest;
+        if (plen >= sizeof(pub_b64)) plen = sizeof(pub_b64) - 1;
+        memcpy(pub_b64, rest, plen); pub_b64[plen] = '\0';
+        strncpy(priv_b64, sep + 1, sizeof(priv_b64) - 1);
+        priv_b64[sizeof(priv_b64) - 1] = '\0';
+        size_t dec_len;
+        crypto_b64_decode(pub_b64, g_app.identity.pubkey, CRYPTO_PUBKEY_BYTES, &dec_len);
+        crypto_b64_decode(priv_b64, g_app.identity.privkey, 32, &dec_len);
+        g_app.identity.valid = true;
+        identity_save(&g_app.identity);
+        app_navigate_to(SCR_HOME);
+        scr_home_refresh();
+        printf("CMD:OK:set_identity\n");
+        fflush(stdout);
+    }
+    /* CMD:ADD_CONTACT:<name>:<status>:<pubkey_b64> — add contact (test) */
+    else if (strncmp(cmd, "CMD:ADD_CONTACT:", 16) == 0) {
+        const char *rest = cmd + 16;
+        const char *c1 = strchr(rest, ':');
+        if (!c1) { printf("CMD:ERR:add_contact_syntax\n"); fflush(stdout); return; }
+        const char *c2 = strchr(c1 + 1, ':');
+        if (!c2) { printf("CMD:ERR:add_contact_syntax\n"); fflush(stdout); return; }
+        char cname[64];
+        size_t nlen = c1 - rest;
+        if (nlen >= sizeof(cname)) nlen = sizeof(cname) - 1;
+        memcpy(cname, rest, nlen); cname[nlen] = '\0';
+        int status = atoi(c1 + 1);
+        const char *pk_b64 = c2 + 1;
+        if (g_app.contact_count >= MAX_CONTACTS) {
+            printf("CMD:ERR:contacts_full\n"); fflush(stdout); return;
+        }
+        contact_t *ct = &g_app.contacts[g_app.contact_count];
+        memset(ct, 0, sizeof(*ct));
+        ct->id = g_app.next_contact_id++;
+        strncpy(ct->name, cname, sizeof(ct->name) - 1);
+        ct->status = status;
+        strncpy(ct->public_key, pk_b64, sizeof(ct->public_key) - 1);
+        g_app.contact_count++;
+        contacts_save();
+        scr_contacts_refresh();
+        printf("CMD:OK:add_contact:%s\n", cname);
         fflush(stdout);
     }
     /* CMD:SEND:<name>:<plaintext> — encrypt and send a message to contact */
@@ -2043,3 +2100,4 @@ void app_test_tick(void)
 
     test_execute_step();
 }
+#endif /* !OSM_MCU_BUILD */

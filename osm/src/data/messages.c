@@ -1,6 +1,7 @@
 #include "messages.h"
 #include "../crypto.h"
 #include "../data/contacts.h"
+#include "../hal/hal_storage_util.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -39,18 +40,9 @@ static void json_unescape(char *dst, const char *src, size_t max)
 
 void messages_load(void)
 {
-    FILE *f = fopen(MESSAGES_FILE, "r");
-    if (!f) return;
-
-    fseek(f, 0, SEEK_END);
-    long len = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (len <= 0) { fclose(f); return; }
-
-    char *buf = malloc(len + 1);
-    fread(buf, 1, len, f);
-    buf[len] = '\0';
-    fclose(f);
+    size_t len = 0;
+    char *buf = hal_storage_read_file(MESSAGES_FILE, &len);
+    if (!buf) return;
 
     g_app.message_count = 0;
     g_app.next_message_id = 1;
@@ -106,20 +98,25 @@ void messages_load(void)
 
 void messages_save(void)
 {
-    FILE *f = fopen(MESSAGES_FILE, "w");
-    if (!f) return;
+    /* Messages can be large; use heap buffer */
+    size_t buf_size = 256 + g_app.message_count * (MAX_TEXT_LEN * 2 + 128);
+    char *buf = malloc(buf_size);
+    if (!buf) return;
 
-    fprintf(f, "[\n");
+    int pos = 0;
+    pos += snprintf(buf + pos, buf_size - pos, "[\n");
     for (uint32_t i = 0; i < g_app.message_count; i++) {
         message_t *m = &g_app.messages[i];
         char escaped[MAX_TEXT_LEN * 2];
         json_escape(escaped, m->plaintext, sizeof(escaped));
-        fprintf(f, "  {\"id\":%u, \"cid\":%u, \"dir\":%d, \"ts\":%ld, \"text\":\"%s\"}%s\n",
+        pos += snprintf(buf + pos, buf_size - pos,
+                "  {\"id\":%u, \"cid\":%u, \"dir\":%d, \"ts\":%ld, \"text\":\"%s\"}%s\n",
                 m->id, m->contact_id, m->direction, m->timestamp, escaped,
                 (i < g_app.message_count - 1) ? "," : "");
     }
-    fprintf(f, "]\n");
-    fclose(f);
+    pos += snprintf(buf + pos, buf_size - pos, "]\n");
+    hal_storage_write_file(MESSAGES_FILE, buf, (size_t)pos);
+    free(buf);
 }
 
 message_t *messages_add(uint32_t contact_id, msg_direction_t dir, const char *plaintext)
