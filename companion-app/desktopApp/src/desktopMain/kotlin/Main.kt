@@ -3,6 +3,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import com.osmapp.data.FileStorage
 import com.osmapp.data.MessageStore
 import com.osmapp.model.*
 import com.osmapp.transport.TcpTransport
@@ -23,7 +24,8 @@ fun main(args: Array<String>) {
         i++
     }
 
-    val store = MessageStore(storeDir ?: (System.getProperty("user.home") + "/.osm-ca"))
+    val storage = FileStorage(storeDir ?: (System.getProperty("user.home") + "/.osm-ca"))
+    val store = MessageStore(storage)
 
     application {
     val transport = remember { TcpTransport(portFilter) }

@@ -1,47 +1,48 @@
 package com.osmapp.data
 
 import com.osmapp.model.CipherMessage
-import java.io.File
 
 /**
  * Persists CA inbox/outbox messages to JSON files.
  * Each OSM device gets its own directory under the store root.
  * Max 50 inbox and 200 outbox messages per device.
  */
-class MessageStore(baseDir: String = System.getProperty("user.home") + "/.osm-ca") {
-
-    private val root = File(baseDir).also { it.mkdirs() }
+class MessageStore(private val storage: FileStorage) {
 
     companion object {
         private const val MAX_INBOX = 50
         private const val MAX_OUTBOX = 200
     }
 
-    private fun deviceDir(deviceId: String): File =
-        File(root, deviceId.replace(Regex("[^a-zA-Z0-9_-]"), "_")).also { it.mkdirs() }
+    private fun deviceDir(deviceId: String): String {
+        val safeName = deviceId.replace(Regex("[^a-zA-Z0-9_-]"), "_")
+        val dir = storage.resolve(storage.rootDir, safeName)
+        storage.ensureDir(dir)
+        return dir
+    }
 
     fun saveInbox(deviceId: String, messages: List<CipherMessage>) {
-        val file = File(deviceDir(deviceId), "inbox.json")
+        val path = storage.resolve(deviceDir(deviceId), "inbox.json")
         val trimmed = messages.takeLast(MAX_INBOX)
-        file.writeText(serializeMessages(trimmed))
+        storage.writeFile(path, serializeMessages(trimmed))
     }
 
     fun loadInbox(deviceId: String): List<CipherMessage> {
-        val file = File(deviceDir(deviceId), "inbox.json")
-        if (!file.exists()) return emptyList()
-        return deserializeMessages(file.readText())
+        val path = storage.resolve(deviceDir(deviceId), "inbox.json")
+        val content = storage.readFile(path) ?: return emptyList()
+        return deserializeMessages(content)
     }
 
     fun saveOutbox(deviceId: String, messages: List<CipherMessage>) {
-        val file = File(deviceDir(deviceId), "outbox.json")
+        val path = storage.resolve(deviceDir(deviceId), "outbox.json")
         val trimmed = messages.takeLast(MAX_OUTBOX)
-        file.writeText(serializeMessages(trimmed))
+        storage.writeFile(path, serializeMessages(trimmed))
     }
 
     fun loadOutbox(deviceId: String): List<CipherMessage> {
-        val file = File(deviceDir(deviceId), "outbox.json")
-        if (!file.exists()) return emptyList()
-        return deserializeMessages(file.readText())
+        val path = storage.resolve(deviceDir(deviceId), "outbox.json")
+        val content = storage.readFile(path) ?: return emptyList()
+        return deserializeMessages(content)
     }
 
     private fun serializeMessages(messages: List<CipherMessage>): String {
@@ -62,7 +63,6 @@ class MessageStore(baseDir: String = System.getProperty("user.home") + "/.osm-ca
 
     private fun deserializeMessages(json: String): List<CipherMessage> {
         val messages = mutableListOf<CipherMessage>()
-        // Simple JSON parsing — find each object between { }
         var i = 0
         while (i < json.length) {
             val start = json.indexOf('{', i)
@@ -73,7 +73,7 @@ class MessageStore(baseDir: String = System.getProperty("user.home") + "/.osm-ca
             i = end + 1
 
             val text = extractString(obj, "text") ?: continue
-            val ts = extractLong(obj, "ts") ?: System.currentTimeMillis()
+            val ts = extractLong(obj, "ts") ?: currentTimeMillis()
             val dir = extractString(obj, "dir")?.let {
                 try { CipherMessage.Direction.valueOf(it) } catch (_: Exception) { CipherMessage.Direction.FROM_OSM }
             } ?: CipherMessage.Direction.FROM_OSM
@@ -119,3 +119,5 @@ class MessageStore(baseDir: String = System.getProperty("user.home") + "/.osm-ca
         return numStr.toLongOrNull()
     }
 }
+
+internal expect fun currentTimeMillis(): Long

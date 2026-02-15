@@ -17,3 +17,9 @@ dependencyResolutionManagement {
 rootProject.name = "companion-app"
 include(":shared")
 include(":desktopApp")
+
+val localPropsFile = file("local.properties")
+val hasAndroidSdk = localPropsFile.exists() && localPropsFile.readText().contains("sdk.dir")
+if (hasAndroidSdk) {
+    include(":androidApp")
+}
