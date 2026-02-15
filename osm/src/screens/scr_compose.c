@@ -57,7 +57,7 @@ static void send_cb(lv_event_t *e)
         messages_save();
 
         /* Send ciphertext to CA via transport */
-        app_outbox_enqueue(CHAR_UUID_TX, msg->ciphertext);
+        app_send_encrypted_msg(msg->ciphertext);
 
         char ctx[128];
         snprintf(ctx, sizeof(ctx), "Encrypted Msg -> %s", c->name);

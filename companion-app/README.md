@@ -32,9 +32,18 @@ cd companion-app
 # Build
 ./gradlew :desktopApp:compileKotlinDesktop
 
-# Run
+# Run (auto-discovers all OSMs on ports 19200-19209)
 ./gradlew :desktopApp:run
+
+# Run targeting a specific OSM port with window title
+./gradlew :desktopApp:createDistributable
+./desktopApp/build/compose/binaries/main/app/companion-app/bin/companion-app \
+    --port 19200 --title Alice
 ```
+
+CLI arguments:
+- `--port <N>` — restrict discovery to a single OSM port (instead of scanning 19200-19209)
+- `--title <name>` — set the window title to "CA — &lt;name&gt;"
 
 Or use the locally-installed Gradle if the wrapper has SSL issues:
 ```bash
@@ -43,16 +52,16 @@ Or use the locally-installed Gradle if the wrapper has SSL issues:
 
 ## Simulator Mode
 
-The CA scans localhost ports 19200–19209 for running OSM instances.
-Start one or more OSM simulators first:
+The CA scans localhost ports 19200–19209 for running OSM instances (or a single
+port if `--port` is specified). Start one or more OSM simulators first:
 
 ```bash
 cd osm/build
-./secure_communicator --port 19200
-./secure_communicator --port 19201  # second instance
+./secure_communicator --port 19200 --name Alice
+./secure_communicator --port 19201 --name Bob
 ```
 
-Then launch the CA — it will auto-discover running OSMs.
+Then launch the CA — it will auto-discover and auto-connect to running OSMs.
 
 ## UI
 

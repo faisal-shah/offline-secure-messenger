@@ -93,20 +93,76 @@ static void on_ca_disconnect(int client_idx)
     app_log("Transport", buf);
 }
 
-static void on_ca_message(int client_idx, uint16_t char_uuid,
-                          const uint8_t *data, size_t len)
+static void handle_key_exchange_msg(const char *payload)
 {
-    (void)client_idx;
-    if (char_uuid != CHAR_UUID_RX || len == 0) return;
+    /* Format: <sender_name>:<pubkey_b64> */
+    const char *colon = strchr(payload, ':');
+    if (!colon || colon == payload) {
+        app_log("CA->OSM", "Malformed KEX message (no colon)");
+        return;
+    }
 
-    /* Data from CA is ciphertext (base64) to be decrypted/processed */
-    char ciphertext[MAX_CIPHER_LEN];
-    if (len >= MAX_CIPHER_LEN) len = MAX_CIPHER_LEN - 1;
-    memcpy(ciphertext, data, len);
-    ciphertext[len] = '\0';
+    char sender_name[MAX_NAME_LEN];
+    size_t name_len = (size_t)(colon - payload);
+    if (name_len >= MAX_NAME_LEN) name_len = MAX_NAME_LEN - 1;
+    memcpy(sender_name, payload, name_len);
+    sender_name[name_len] = '\0';
 
-    app_log("CA->OSM", ciphertext);
+    const char *pubkey_b64 = colon + 1;
 
+    /* Validate the pubkey is decodable */
+    uint8_t peer_pubkey[CRYPTO_PUBKEY_BYTES];
+    if (crypto_b64_to_pubkey(pubkey_b64, peer_pubkey) != 0) {
+        app_log("CA->OSM", "Malformed KEX message (bad pubkey)");
+        return;
+    }
+
+    /* Look for existing contact with this name */
+    contact_t *c = NULL;
+    for (uint32_t i = 0; i < g_app.contact_count; i++) {
+        if (strcmp(g_app.contacts[i].name, sender_name) == 0) {
+            c = &g_app.contacts[i];
+            break;
+        }
+    }
+
+    if (c && c->status == CONTACT_PENDING_SENT) {
+        /* We initiated, they responded — store their pubkey, establish */
+        strncpy(c->public_key, pubkey_b64, MAX_KEY_LEN - 1);
+        c->status = CONTACT_ESTABLISHED;
+        contacts_save();
+        char ctx[128];
+        snprintf(ctx, sizeof(ctx), "KEX complete: %s", sender_name);
+        app_log(ctx, pubkey_b64);
+    } else if (!c) {
+        /* New inbound key exchange — auto-create contact */
+        c = contacts_add(sender_name);
+        if (c) {
+            strncpy(c->public_key, pubkey_b64, MAX_KEY_LEN - 1);
+            c->status = CONTACT_PENDING_RECEIVED;
+            contacts_save();
+            char ctx[128];
+            snprintf(ctx, sizeof(ctx), "KEX received from %s", sender_name);
+            app_log(ctx, pubkey_b64);
+        }
+    } else {
+        char ctx[128];
+        snprintf(ctx, sizeof(ctx), "KEX ignored (status=%d) from %s",
+                 c->status, sender_name);
+        app_log(ctx, pubkey_b64);
+    }
+
+    /* Refresh UI if we're on a relevant screen */
+    if (g_app.current_screen == SCR_HOME)
+        scr_home_refresh();
+    else if (g_app.current_screen == SCR_CONTACTS)
+        scr_contacts_refresh();
+    else if (g_app.current_screen == SCR_KEY_EXCHANGE)
+        scr_key_exchange_refresh();
+}
+
+static void handle_encrypted_msg(const char *ciphertext)
+{
     /* Try to decrypt with each established contact's pubkey */
     for (uint32_t i = 0; i < g_app.contact_count; i++) {
         contact_t *c = &g_app.contacts[i];
@@ -119,7 +175,6 @@ static void on_ca_message(int client_idx, uint16_t char_uuid,
         char plaintext[MAX_TEXT_LEN];
         if (crypto_decrypt(ciphertext, peer_pubkey, g_app.identity.privkey,
                            plaintext, sizeof(plaintext))) {
-            /* Success — add as received message */
             message_t *msg = messages_add(c->id, MSG_RECEIVED, "");
             if (msg) {
                 strncpy(msg->plaintext, plaintext, MAX_TEXT_LEN - 1);
@@ -130,6 +185,14 @@ static void on_ca_message(int client_idx, uint16_t char_uuid,
                 char ctx[128];
                 snprintf(ctx, sizeof(ctx), "Decrypted from %s", c->name);
                 app_log(ctx, plaintext);
+
+                /* Refresh UI if on relevant screen */
+                if (g_app.current_screen == SCR_HOME)
+                    scr_home_refresh();
+                else if (g_app.current_screen == SCR_INBOX)
+                    scr_inbox_refresh();
+                else if (g_app.current_screen == SCR_CONVERSATION)
+                    scr_conversation_refresh();
             }
             return;
         }
@@ -137,11 +200,33 @@ static void on_ca_message(int client_idx, uint16_t char_uuid,
     app_log("CA->OSM", "Could not decrypt (unknown sender or bad key)");
 }
 
+static void on_ca_message(int client_idx, uint16_t char_uuid,
+                          const uint8_t *data, size_t len)
+{
+    (void)client_idx;
+    if (char_uuid != CHAR_UUID_RX || len == 0) return;
+
+    char buf[MAX_CIPHER_LEN];
+    if (len >= MAX_CIPHER_LEN) len = MAX_CIPHER_LEN - 1;
+    memcpy(buf, data, len);
+    buf[len] = '\0';
+
+    app_log("CA->OSM", buf);
+
+    if (strncmp(buf, MSG_PREFIX_KEY, strlen(MSG_PREFIX_KEY)) == 0) {
+        handle_key_exchange_msg(buf + strlen(MSG_PREFIX_KEY));
+    } else if (strncmp(buf, MSG_PREFIX_MSG, strlen(MSG_PREFIX_MSG)) == 0) {
+        handle_encrypted_msg(buf + strlen(MSG_PREFIX_MSG));
+    } else {
+        app_log("CA->OSM", "Unknown message format (no OSM: prefix)");
+    }
+}
+
 /*---------- App lifecycle ----------*/
 void app_init(lv_display_t *disp,
               lv_indev_t *mouse, lv_indev_t *kb,
               lv_group_t *dev_group, bool test_mode,
-              uint16_t port)
+              uint16_t port, const char *name)
 {
     memset(&g_app, 0, sizeof(g_app));
     g_app.dev_disp = disp;
@@ -153,6 +238,8 @@ void app_init(lv_display_t *disp,
     g_app.next_contact_id = 1;
     g_app.next_message_id = 1;
     g_app.transport_port = port;
+    if (name && name[0])
+        strncpy(g_app.device_name, name, sizeof(g_app.device_name) - 1);
 
     mkdir("screenshots", 0755);
 
@@ -278,6 +365,23 @@ void app_transport_poll(void)
 
     /* Try to flush outbox on each poll (in case CA just connected) */
     app_outbox_flush();
+}
+
+/*---------- Message envelope helpers ----------*/
+void app_send_key_exchange(const char *pubkey_b64)
+{
+    char envelope[MAX_CIPHER_LEN];
+    snprintf(envelope, sizeof(envelope), "%s%s:%s",
+             MSG_PREFIX_KEY, g_app.device_name, pubkey_b64);
+    app_outbox_enqueue(CHAR_UUID_TX, envelope);
+}
+
+void app_send_encrypted_msg(const char *ciphertext_b64)
+{
+    char envelope[MAX_CIPHER_LEN];
+    snprintf(envelope, sizeof(envelope), "%s%s",
+             MSG_PREFIX_MSG, ciphertext_b64);
+    app_outbox_enqueue(CHAR_UUID_TX, envelope);
 }
 
 /*---------- Test driver ----------*/

@@ -23,11 +23,14 @@ int main(int argc, char *argv[])
 {
     bool test_mode = false;
     uint16_t port = TRANSPORT_DEFAULT_PORT;
+    const char *name = "";
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--test") == 0)
             test_mode = true;
         else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc)
             port = (uint16_t)atoi(argv[++i]);
+        else if (strcmp(argv[i], "--name") == 0 && i + 1 < argc)
+            name = argv[++i];
     }
 
     lv_init();
@@ -36,7 +39,8 @@ int main(int argc, char *argv[])
     /* Device display — 320×240 (becomes default as first display) */
     lv_display_t *dev_disp = lv_sdl_window_create(DEVICE_HOR_RES, DEVICE_VER_RES);
     lv_sdl_window_set_zoom(dev_disp, SDL_ZOOM);
-    lv_sdl_window_set_title(dev_disp, "Secure Communicator");
+    lv_sdl_window_set_title(dev_disp,
+        name[0] ? name : "Secure Communicator");
 
     /* Device input devices (dev_disp is already the default) */
     lv_indev_t *mouse = lv_sdl_mouse_create();
@@ -48,7 +52,7 @@ int main(int argc, char *argv[])
     lv_indev_set_group(kb, dev_group);
 
     /* Initialize the application */
-    app_init(dev_disp, mouse, kb, dev_group, test_mode, port);
+    app_init(dev_disp, mouse, kb, dev_group, test_mode, port, name);
 
     /* Main loop */
     while (!app_should_quit()) {

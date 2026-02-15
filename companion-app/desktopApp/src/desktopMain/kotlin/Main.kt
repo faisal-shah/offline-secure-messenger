@@ -8,8 +8,20 @@ import com.osmapp.transport.TcpTransport
 import com.osmapp.ui.CompanionAppUI
 import kotlinx.coroutines.*
 
-fun main() = application {
-    val transport = remember { TcpTransport() }
+fun main(args: Array<String>) {
+    var portFilter: Int? = null
+    var windowTitle = "Companion App"
+    var i = 0
+    while (i < args.size) {
+        when (args[i]) {
+            "--port" -> { i++; portFilter = args.getOrNull(i)?.toIntOrNull() }
+            "--title" -> { i++; args.getOrNull(i)?.let { windowTitle = "CA — $it" } }
+        }
+        i++
+    }
+
+    application {
+    val transport = remember { TcpTransport(portFilter) }
     val scope = rememberCoroutineScope()
     var devices by remember { mutableStateOf(listOf<OsmDevice>()) }
 
@@ -19,6 +31,20 @@ fun main() = application {
             val existing = devices.find { it.id == discovered.id }
             if (existing == null) {
                 devices = devices + discovered
+                // Auto-connect to newly discovered devices
+                if (discovered.state == ConnectionState.DISCONNECTED) {
+                    scope.launch {
+                        devices = devices.map {
+                            if (it.id == discovered.id) it.copy(state = ConnectionState.CONNECTING) else it
+                        }
+                        val ok = transport.connect(discovered)
+                        if (!ok) {
+                            devices = devices.map {
+                                if (it.id == discovered.id) it.copy(state = ConnectionState.DISCONNECTED) else it
+                            }
+                        }
+                    }
+                }
             } else {
                 // Update state but keep inbox/outbox
                 devices = devices.map {
@@ -59,7 +85,7 @@ fun main() = application {
 
     Window(
         onCloseRequest = ::exitApplication,
-        title = "Companion App",
+        title = windowTitle,
         state = rememberWindowState(width = 700.dp, height = 500.dp)
     ) {
         CompanionAppUI(
@@ -92,5 +118,6 @@ fun main() = application {
                 }
             }
         )
+    }
     }
 }

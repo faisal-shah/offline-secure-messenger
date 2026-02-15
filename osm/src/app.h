@@ -93,6 +93,9 @@ typedef struct {
     /* Navigation context */
     uint32_t      selected_contact_id;
 
+    /* Device name (from --name CLI arg) */
+    char              device_name[32];
+
     /* Identity (our keypair) */
     crypto_identity_t identity;
 
@@ -122,7 +125,7 @@ extern app_state_t g_app;
 void app_init(lv_display_t *disp,
               lv_indev_t *mouse, lv_indev_t *kb,
               lv_group_t *dev_group, bool test_mode,
-              uint16_t port);
+              uint16_t port, const char *name);
 
 /* Log output to stderr (replaces I/O monitor) */
 void app_log(const char *context, const char *data);
@@ -135,6 +138,12 @@ void app_test_tick(void);
 void app_outbox_enqueue(uint16_t char_uuid, const char *data);
 void app_outbox_flush(void);
 void app_transport_poll(void);
+
+/* Message envelope helpers */
+#define MSG_PREFIX_KEY "OSM:KEY:"
+#define MSG_PREFIX_MSG "OSM:MSG:"
+void app_send_key_exchange(const char *pubkey_b64);
+void app_send_encrypted_msg(const char *ciphertext_b64);
 
 /* Screenshot helper */
 void app_take_screenshot(const char *name);

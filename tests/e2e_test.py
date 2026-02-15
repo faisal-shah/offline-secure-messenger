@@ -224,10 +224,10 @@ def test_send_receive():
     ca = TcpClient(PORT_A, "CA-A")
     assert ca.connect(), "CA failed to connect"
 
-    # Send a message to OSM (simulating incoming ciphertext)
-    test_data = b"TestCiphertext123"
+    # Send a properly enveloped message (will fail decrypt but shouldn't crash)
+    test_data = b"OSM:MSG:InvalidCiphertext123"
     ca.send_message(CHAR_UUID_RX, test_data)
-    print("  PASS: Sent data to OSM")
+    print("  PASS: Sent enveloped data to OSM")
 
     # Give OSM time to process
     time.sleep(0.5)
@@ -303,9 +303,9 @@ def test_multiple_osm_instances():
     assert ca_b.connect(), "CA-B failed to connect"
     print("  PASS: Both CAs connected to their OSMs")
 
-    # Send data through each independently
-    ca_a.send_message(CHAR_UUID_RX, b"Hello from A")
-    ca_b.send_message(CHAR_UUID_RX, b"Hello from B")
+    # Send data through each independently (using envelope format)
+    ca_a.send_message(CHAR_UUID_RX, b"OSM:MSG:Hello from A")
+    ca_b.send_message(CHAR_UUID_RX, b"OSM:MSG:Hello from B")
     time.sleep(0.5)
 
     assert osm_a.proc.poll() is None, "OSM-A crashed"
@@ -326,7 +326,7 @@ def test_reconnect():
 
     ca = TcpClient(PORT_A, "CA-A")
     assert ca.connect(), "CA failed to connect (first)"
-    ca.send_message(CHAR_UUID_RX, b"First connection")
+    ca.send_message(CHAR_UUID_RX, b"OSM:MSG:First connection")
     time.sleep(0.3)
     ca.disconnect()
     print("  PASS: First connection OK, disconnected")
@@ -335,12 +335,56 @@ def test_reconnect():
 
     ca2 = TcpClient(PORT_A, "CA-A-2")
     assert ca2.connect(), "CA failed to reconnect"
-    ca2.send_message(CHAR_UUID_RX, b"Second connection")
+    ca2.send_message(CHAR_UUID_RX, b"OSM:MSG:Second connection")
     time.sleep(0.3)
     assert osm.proc.poll() is None, "OSM crashed after reconnect"
     print("  PASS: Reconnection OK")
 
     ca2.disconnect()
+    osm.stop()
+
+
+def test_key_exchange_envelope():
+    """Test 7: Key exchange via OSM:KEY: envelope creates contact."""
+    print("\n[Test 7] Key exchange envelope")
+    osm = OsmProcess(PORT_A, "OSM-A")
+    assert osm.start(), "OSM failed to start"
+
+    ca = TcpClient(PORT_A, "CA-A")
+    assert ca.connect(), "CA failed to connect"
+    time.sleep(0.3)
+
+    # Send a key exchange message (simulating Alice sending her pubkey)
+    # Use a fake but valid-length base64 pubkey (44 chars for 32 bytes)
+    fake_pubkey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    kex_msg = f"OSM:KEY:Alice:{fake_pubkey}".encode()
+    ca.send_message(CHAR_UUID_RX, kex_msg)
+    print("  PASS: Sent KEX envelope to OSM")
+
+    time.sleep(0.5)
+    assert osm.proc.poll() is None, "OSM crashed after KEX message"
+    print("  PASS: OSM processed KEX message without crash")
+
+    ca.disconnect()
+    osm.stop()
+
+
+def test_unknown_envelope():
+    """Test 8: Unknown envelope prefix is handled gracefully."""
+    print("\n[Test 8] Unknown envelope prefix")
+    osm = OsmProcess(PORT_A, "OSM-A")
+    assert osm.start(), "OSM failed to start"
+
+    ca = TcpClient(PORT_A, "CA-A")
+    assert ca.connect(), "CA failed to connect"
+
+    # Send garbage without any known prefix
+    ca.send_message(CHAR_UUID_RX, b"JUNK:SomeRandomData")
+    time.sleep(0.5)
+    assert osm.proc.poll() is None, "OSM crashed on unknown envelope"
+    print("  PASS: Unknown envelope handled gracefully")
+
+    ca.disconnect()
     osm.stop()
 
 
@@ -361,6 +405,8 @@ def main():
         test_large_message_fragmentation,
         test_multiple_osm_instances,
         test_reconnect,
+        test_key_exchange_envelope,
+        test_unknown_envelope,
     ]
 
     passed = 0

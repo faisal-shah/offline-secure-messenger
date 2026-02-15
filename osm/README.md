@@ -51,6 +51,21 @@ The OSM communicates with the **Companion App (CA)** over a TCP transport
 - Outbound message queue: ciphertext queued when no CA connected, flushed on connect
 - Home screen shows CA connection status indicator
 
+### Message Envelope Protocol
+
+All messages between OSM and CA use a text-based envelope:
+
+| Prefix | Format | Purpose |
+|---|---|---|
+| `OSM:KEY:` | `OSM:KEY:<sender_name>:<pubkey_b64>` | Key exchange (auto-creates contact on receiver) |
+| `OSM:MSG:` | `OSM:MSG:<ciphertext_b64>` | Encrypted message |
+
+**Key exchange flow:**
+1. Alice adds "Bob" → OSM sends `OSM:KEY:Alice:<alice_pubkey>` to CA
+2. Bob receives via his CA → OSM auto-creates contact "Alice" (PENDING_RECEIVED)
+3. Bob completes exchange → OSM sends `OSM:KEY:Bob:<bob_pubkey>`
+4. Alice receives → contact "Bob" transitions from PENDING_SENT to ESTABLISHED
+
 ## Building
 
 ```bash
@@ -78,13 +93,16 @@ rm -rf osm/build && mkdir osm/build && cd osm/build && cmake .. && make -j$(npro
 
 ```bash
 cd osm/build
-./secure_communicator              # default port 19200
-./secure_communicator --port 19201 # custom port (for multiple instances)
+./secure_communicator                           # default port 19200
+./secure_communicator --port 19201              # custom port
+./secure_communicator --port 19200 --name Alice # named instance
 ```
 
+`--name` sets the device identity displayed in the header bar and used in
+the `OSM:KEY:<name>:<pubkey>` envelope during key exchange.
+
 One SDL window opens at 640×480 (320×240 at 2× zoom). Use mouse and keyboard.
-Click textareas to focus before typing. Device output (ciphertext, DH keys)
-is logged to stderr.
+Click textareas to focus before typing.
 
 ### Self-test mode
 

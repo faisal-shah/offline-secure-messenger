@@ -16,7 +16,7 @@ import java.nio.ByteOrder
  *   [4 bytes msg_len][2 bytes char_uuid][packet_data]
  * Fragmentation: [1 byte flags][2 bytes seq][payload]
  */
-class TcpTransport : Transport {
+class TcpTransport(private val portFilter: Int? = null) : Transport {
 
     companion object {
         private const val PORT_START = 19200
@@ -41,7 +41,8 @@ class TcpTransport : Transport {
         discoveryJob?.cancel()
         discoveryJob = CoroutineScope(Dispatchers.IO).launch {
             while (isActive) {
-                for (port in PORT_START..PORT_END) {
+                val ports = if (portFilter != null) portFilter..portFilter else PORT_START..PORT_END
+                for (port in ports) {
                     try {
                         val id = "osm-$port"
                         // Skip probe if already connected

@@ -56,7 +56,11 @@ void scr_home_create(void)
     lv_obj_set_scrollbar_mode(header, LV_SCROLLBAR_MODE_OFF);
 
     lv_obj_t *title = lv_label_create(header);
-    lv_label_set_text(title, LV_SYMBOL_EYE_CLOSE " SecureComm");
+    if (g_app.device_name[0]) {
+        lv_label_set_text_fmt(title, LV_SYMBOL_EYE_CLOSE " %s", g_app.device_name);
+    } else {
+        lv_label_set_text(title, LV_SYMBOL_EYE_CLOSE " SecureComm");
+    }
     lv_obj_set_style_text_color(title, lv_color_hex(0x00B0FF), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
     lv_obj_align(title, LV_ALIGN_LEFT_MID, 0, 0);

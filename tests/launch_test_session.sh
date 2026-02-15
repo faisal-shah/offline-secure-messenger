@@ -88,14 +88,14 @@ echo ""
 cd "$REPO_DIR/osm/build"
 mkdir -p alice bob
 cd alice
-"$OSM_BIN" --port $PORT_ALICE 2>osm_alice.log &
+"$OSM_BIN" --port $PORT_ALICE --name Alice 2>osm_alice.log &
 PID=$!
 echo "$PID OSM-Alice" >> "$PIDFILE"
 echo "  Started OSM-Alice (PID $PID)"
 
 # Launch OSM-Bob
 cd "$REPO_DIR/osm/build/bob"
-"$OSM_BIN" --port $PORT_BOB 2>osm_bob.log &
+"$OSM_BIN" --port $PORT_BOB --name Bob 2>osm_bob.log &
 PID=$!
 echo "$PID OSM-Bob" >> "$PIDFILE"
 echo "  Started OSM-Bob   (PID $PID)"
@@ -136,10 +136,26 @@ fi
 
 if [ -n "$GRADLE" ] && [ -x "$GRADLE" ]; then
     cd "$CA_DIR"
-    "$GRADLE" :desktopApp:run --no-daemon > /tmp/ca_alice.log 2>&1 &
-    PID=$!
-    echo "$PID CA-Alice" >> "$PIDFILE"
-    echo "  Started CA (PID $PID) — discovers both OSMs automatically"
+    # Build once, then launch two instances
+    "$GRADLE" :desktopApp:createDistributable --no-daemon > /tmp/ca_build.log 2>&1
+    if [ $? -eq 0 ]; then
+        DIST_BIN="$CA_DIR/desktopApp/build/compose/binaries/main/app/companion-app/bin/companion-app"
+        if [ -x "$DIST_BIN" ]; then
+            "$DIST_BIN" --port $PORT_ALICE --title Alice > /tmp/ca_alice.log 2>&1 &
+            PID=$!
+            echo "$PID CA-Alice" >> "$PIDFILE"
+            echo "  Started CA-Alice (PID $PID) — port $PORT_ALICE"
+
+            "$DIST_BIN" --port $PORT_BOB --title Bob > /tmp/ca_bob.log 2>&1 &
+            PID=$!
+            echo "$PID CA-Bob" >> "$PIDFILE"
+            echo "  Started CA-Bob   (PID $PID) — port $PORT_BOB"
+        else
+            echo "  WARNING: installDist succeeded but binary not found at $DIST_BIN"
+        fi
+    else
+        echo "  WARNING: Gradle build failed. Check /tmp/ca_build.log"
+    fi
 else
     echo "  WARNING: Could not find or download Gradle. Skipping CA launch."
     echo "  Run manually: cd companion-app && /tmp/gradle-8.10/bin/gradle :desktopApp:run"
@@ -151,22 +167,26 @@ echo "  Test Session Running"
 echo "============================================================"
 echo ""
 echo "  Two OSM windows should appear (Alice and Bob)."
-echo "  One Companion App window will auto-discover both."
+echo "  Two Companion App windows (CA-Alice and CA-Bob)."
 echo ""
 echo "  Workflow to test:"
 echo "    1. In OSM-Alice: generate keypair (first launch wizard)"
 echo "    2. In OSM-Bob:   generate keypair"
 echo "    3. In OSM-Alice: Contacts → Add 'Bob'"
-echo "       This outputs Alice's public key as ciphertext"
-echo "    4. Copy Alice's pubkey from CA → paste into CA → send to OSM-Bob"
-echo "    5. In OSM-Bob: the key exchange wizard receives Alice's key"
-echo "    6. Complete the exchange in both directions"
-echo "    7. Send encrypted messages between Alice and Bob via the CAs"
+echo "       This sends Alice's pubkey as OSM:KEY:Alice:<key> to CA-Alice"
+echo "    4. Copy the text from CA-Alice, paste into CA-Bob, send to OSM-Bob"
+echo "    5. OSM-Bob auto-creates contact 'Alice' (PENDING_RECEIVED)"
+echo "    6. In OSM-Bob: go to Contacts → Alice → Complete Exchange"
+echo "       This sends Bob's pubkey as OSM:KEY:Bob:<key> to CA-Bob"
+echo "    7. Copy from CA-Bob, paste into CA-Alice, send to OSM-Alice"
+echo "    8. OSM-Alice auto-completes the exchange — both now ESTABLISHED"
+echo "    9. Send encrypted messages between Alice and Bob via the CAs"
 echo ""
 echo "  Logs:"
 echo "    OSM-Alice: osm/build/alice/osm_alice.log"
 echo "    OSM-Bob:   osm/build/bob/osm_bob.log"
-echo "    CA:        /tmp/ca_alice.log"
+echo "    CA-Alice:  /tmp/ca_alice.log"
+echo "    CA-Bob:    /tmp/ca_bob.log"
 echo ""
 echo "  Stop all: $0 stop"
 echo ""
