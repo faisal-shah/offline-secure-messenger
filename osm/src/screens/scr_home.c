@@ -146,7 +146,10 @@ void scr_home_refresh(void)
 {
     /* Update CA connection indicator */
     int ca_count = transport_connected_count(&g_app.transport);
-    if (g_app.storage_error) {
+    if (g_app.storage_full) {
+        lv_label_set_text(ca_status_lbl, LV_SYMBOL_WARNING " FULL");
+        lv_obj_set_style_text_color(ca_status_lbl, lv_color_hex(0xFF0000), 0);
+    } else if (g_app.storage_error) {
         lv_label_set_text(ca_status_lbl, LV_SYMBOL_WARNING " STOR");
         lv_obj_set_style_text_color(ca_status_lbl, lv_color_hex(0xFF6D00), 0);
     } else if (ca_count > 0) {

@@ -2,6 +2,7 @@
 #include "../crypto.h"
 #include "../data/contacts.h"
 #include "../hal/hal_storage_util.h"
+#include "../hal/hal_log.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -94,6 +95,9 @@ void messages_load(void)
     }
 
     free(buf);
+
+    if (g_app.message_count == 0 && len > 2)
+        hal_log("Messages", "WARNING: file has data but 0 messages parsed");
 }
 
 void messages_save(void)
@@ -115,8 +119,11 @@ void messages_save(void)
                 (i < g_app.message_count - 1) ? "," : "");
     }
     pos += snprintf(buf + pos, buf_size - pos, "]\n");
-    if (!hal_storage_write_file(MESSAGES_FILE, buf, (size_t)pos))
+    int err = hal_storage_write_file(MESSAGES_FILE, buf, (size_t)pos);
+    if (err) {
         g_app.storage_error = true;
+        if (err == LFS_ERR_NOSPC) g_app.storage_full = true;
+    }
     free(buf);
 }
 

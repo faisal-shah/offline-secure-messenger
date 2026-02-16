@@ -81,7 +81,7 @@ void identity_save(const crypto_identity_t *id)
     int len = snprintf(buf, sizeof(buf),
             "{\n  \"pubkey\": \"%s\",\n  \"privkey\": \"%s\"\n}\n",
             pubkey_b64, privkey_b64);
-    if (!hal_storage_write_file(IDENTITY_FILE, buf, (size_t)len))
+    if (hal_storage_write_file(IDENTITY_FILE, buf, (size_t)len) != 0)
         g_app.storage_error = true;
 
     /* Zero b64 buffers that held key material */

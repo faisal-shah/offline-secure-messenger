@@ -1,5 +1,6 @@
 #include "contacts.h"
 #include "../hal/hal_storage_util.h"
+#include "../hal/hal_log.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -63,6 +64,9 @@ void contacts_load(void)
     }
 
     free(buf);
+
+    if (g_app.contact_count == 0 && len > 2)
+        hal_log("Contacts", "WARNING: file has data but 0 contacts parsed");
 }
 
 void contacts_save(void)
@@ -81,8 +85,11 @@ void contacts_save(void)
                 (i < g_app.contact_count - 1) ? "," : "");
     }
     pos += snprintf(buf + pos, sizeof(buf) - pos, "]\n");
-    if (!hal_storage_write_file(CONTACTS_FILE, buf, (size_t)pos))
+    int err = hal_storage_write_file(CONTACTS_FILE, buf, (size_t)pos);
+    if (err) {
         g_app.storage_error = true;
+        if (err == LFS_ERR_NOSPC) g_app.storage_full = true;
+    }
 }
 
 contact_t *contacts_add(const char *name)

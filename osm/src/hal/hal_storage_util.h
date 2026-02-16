@@ -31,20 +31,24 @@ static inline char *hal_storage_read_file(const char *path, size_t *out_len)
     return buf;
 }
 
-/* Write buffer to a file (create/truncate). Returns true on success. */
-static inline bool hal_storage_write_file(const char *path,
-                                          const void *data, size_t len)
+/* Write buffer to a file (create/truncate).
+ * Returns 0 on success, or a negative LFS error code on failure
+ * (e.g. LFS_ERR_NOSPC when the filesystem is full). */
+static inline int hal_storage_write_file(const char *path,
+                                         const void *data, size_t len)
 {
     lfs_t *lfs = hal_storage_get();
-    if (!lfs) return false;
+    if (!lfs) return LFS_ERR_INVAL;
 
     lfs_file_t f;
     int flags = LFS_O_WRONLY | LFS_O_CREAT | LFS_O_TRUNC;
-    if (lfs_file_open(lfs, &f, path, flags) < 0) return false;
+    int err = lfs_file_open(lfs, &f, path, flags);
+    if (err < 0) return err;
 
     lfs_ssize_t n = lfs_file_write(lfs, &f, data, (lfs_size_t)len);
     lfs_file_close(lfs, &f);
-    return n == (lfs_ssize_t)len;
+    if (n < 0) return (int)n;
+    return (n == (lfs_ssize_t)len) ? 0 : LFS_ERR_NOSPC;
 }
 
 #endif /* HAL_STORAGE_UTIL_H */

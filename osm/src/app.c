@@ -31,11 +31,16 @@
 app_state_t g_app;
 
 /* Track storage write failures */
-static void storage_check_write(const char *file, bool ok)
+static void storage_check_write(const char *file, int err)
 {
-    if (!ok) {
-        app_log("Storage", "WRITE FAILED");
+    if (err != 0) {
         g_app.storage_error = true;
+        if (err == LFS_ERR_NOSPC) {
+            g_app.storage_full = true;
+            app_log("Storage", "FULL — no space left");
+        } else {
+            app_log("Storage", "WRITE FAILED");
+        }
     }
 }
 
@@ -527,6 +532,8 @@ void app_outbox_load(void)
     }
 
     free(buf);
+    if (g_app.outbox_count == 0 && len > 2)
+        app_log("Outbox", "WARNING: file has data but 0 entries parsed");
     char logbuf[48];
     snprintf(logbuf, sizeof(logbuf), "Loaded %u queued messages", g_app.outbox_count);
     app_log("Outbox", logbuf);
@@ -617,6 +624,8 @@ void app_pending_keys_load(void)
         p = end + 1;
     }
     free(buf);
+    if (g_app.pending_key_count == 0 && len > 2)
+        app_log("PendingKeys", "WARNING: file has data but 0 keys parsed");
 }
 
 #ifndef OSM_MCU_BUILD

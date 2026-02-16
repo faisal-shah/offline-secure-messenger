@@ -151,6 +151,56 @@ uv run pytest tests/ble_integration_test.py -v -s
 
 Tests skip gracefully if no BLE adapter is available.
 
+## Stdin Command Protocol (Desktop/Test Only)
+
+The OSM process reads newline-delimited commands from stdin (guarded by
+`#ifndef OSM_MCU_BUILD`). Commands prefixed with `CMD:` drive the app
+programmatically; responses go to stdout prefixed with `CMD:`.
+
+### Data Commands
+
+| Command | Description |
+|---------|-------------|
+| `CMD:STATE` | Dump contacts, messages, pending keys, outbox |
+| `CMD:KEYGEN` | Generate new identity keypair |
+| `CMD:IDENTITY` | Print pubkey (base64) |
+| `CMD:PRIVKEY` | Print privkey (base64) |
+| `CMD:SET_IDENTITY:<pub>:<priv>` | Set identity from base64 keypair |
+| `CMD:ADD:<name>` | Add contact (PENDING_SENT status) |
+| `CMD:ADD_CONTACT:<name>:<status>:<pubkey>` | Add contact with explicit status/key |
+| `CMD:ASSIGN:<name>` | Assign oldest pending key to contact |
+| `CMD:CREATE:<name>` | Create contact from pending key |
+| `CMD:COMPLETE:<name>` | Complete KEX for PENDING_RECEIVED contact |
+| `CMD:SEND:<name>:<text>` | Send message to established contact |
+| `CMD:RECV_COUNT:<n>` | Simulate receiving n incoming messages |
+| `CMD:DELETE:<name>` | Delete contact and their messages |
+| `CMD:DELETE_MSG:<text>` | Delete first message matching text |
+
+### UI-Driven Commands
+
+| Command | Description |
+|---------|-------------|
+| `CMD:UI_ADD_CONTACT:<name>` | Simulate adding contact via UI |
+| `CMD:UI_COMPOSE:<name>:<text>` | Simulate composing+sending via UI |
+| `CMD:UI_REPLY:<name>:<text>` | Reply via conversation screen |
+| `CMD:UI_OPEN_CHAT:<name>` | Open conversation screen for contact |
+| `CMD:UI_ASSIGN_PENDING:<name>` | Assign pending key via UI flow |
+| `CMD:UI_NEW_FROM_PENDING:<name>` | Create new contact from pending key via UI |
+| `CMD:UI_COMPLETE_KEX:<name>` | Complete KEX via conversation screen |
+
+## Security Hardening
+
+- **Private key zeroing:** `secure_zero()` (volatile memset) zeros privkey on shutdown
+- **Buffer zeroing:** All intermediate base64 and crypto work buffers zeroed before free
+- **RNG self-test:** Reads 32 bytes at startup, verifies not all-zero
+- **Storage error detection:** `hal_storage_write_file()` returns LFS error codes;
+  NOSPC sets `g_app.storage_full` (red "FULL" indicator), other errors set
+  `g_app.storage_error` (orange "⚠ STOR" indicator)
+- **Parse corruption warnings:** All load functions log a warning if the file contains
+  data but 0 items were parsed
+- **Transport validation:** START frame `total_len` validated against `TRANSPORT_MAX_MSG_SIZE`
+- **Crypto stack buffers:** No heap allocation in encrypt/decrypt (bounded stack buffers)
+
 ## Key Conventions
 
 - C11, LVGL 9.4 API, TweetNaCl for crypto
@@ -172,6 +222,7 @@ modules in `osm/src/hal/`:
 | Storage | `hal_storage.h` | `hal_storage_filebd.c` | LittleFS init/mount/get (file-backed block device) |
 | RNG | `hal_rng.h` | `hal_rng_posix.c` | Random bytes (`/dev/urandom`) |
 | Log | `hal_log.h` | `hal_log_posix.c` | `fprintf(stderr, ...)` |
+| Time | `hal_time.h` | `hal_time_posix.c` | Monotonic clock + delay (`clock_gettime`/`usleep`) |
 
 Helper: `hal_storage_util.h` — inline `hal_storage_read_file()` / `hal_storage_write_file()`
 wrapping LittleFS open/read/write/close into single calls.
@@ -181,3 +232,26 @@ wrapping LittleFS open/read/write/close into single calls.
 - Block size: 4096, Block count: 256 (1 MB virtual flash)
 - Backing file: `osm_data.img` in working directory
 - Auto-formats on first use (mount fails → format → mount)
+
+## MCU RAM Footprint (Critical)
+
+`app_state_t` (`g_app`) is the main application struct. Current RAM usage:
+
+| Field | Size |
+|-------|------|
+| `messages[256]` (256 × 3092 B) | **791 KB** |
+| `outbox[32]` (32 × 2060 B) | **66 KB** |
+| `contacts[32]` (32 × 340 B) | **11 KB** |
+| `pending_keys[8]` (8 × 264 B) | **2 KB** |
+| Other fields | ~1 KB |
+| **Total** | **~871 KB** |
+
+**Problem:** ESP32-S3 has 512 KB SRAM (320 KB usable after LVGL framebuffers).
+The `messages[]` array alone exceeds available RAM.
+
+**Migration plan for MCU:**
+1. Reduce `MAX_MESSAGES` from 256 → 64 (~194 KB savings)
+2. Move `ciphertext[2048]` out of `message_t` into LittleFS (per-message files)
+   — reduces `message_t` from 3092 B to ~1044 B (~67 KB for 64 messages)
+3. Store only the most recent N messages in RAM; page older ones from flash
+4. Consider reducing `MAX_CIPHER_LEN` if protocol permits shorter payloads
