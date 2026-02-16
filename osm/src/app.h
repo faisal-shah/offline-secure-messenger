@@ -128,6 +128,9 @@ typedef struct {
     /* Pending inbound key exchanges (awaiting user assignment) */
     pending_key_t pending_keys[MAX_PENDING_KEYS];
     uint32_t      pending_key_count;
+
+    /* Storage health flag — set on write failure */
+    bool          storage_error;
 } app_state_t;
 
 /* Global app state */

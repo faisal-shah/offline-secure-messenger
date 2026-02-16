@@ -81,7 +81,8 @@ void contacts_save(void)
                 (i < g_app.contact_count - 1) ? "," : "");
     }
     pos += snprintf(buf + pos, sizeof(buf) - pos, "]\n");
-    hal_storage_write_file(CONTACTS_FILE, buf, (size_t)pos);
+    if (!hal_storage_write_file(CONTACTS_FILE, buf, (size_t)pos))
+        g_app.storage_error = true;
 }
 
 contact_t *contacts_add(const char *name)

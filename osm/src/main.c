@@ -5,9 +5,8 @@
 
 #include "lvgl.h"
 #include "app.h"
+#include "hal/hal_time.h"
 #include <stdio.h>
-#include <unistd.h>
-#include <time.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -15,9 +14,7 @@
 
 static uint32_t tick_get_cb(void)
 {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+    return hal_get_ms();
 }
 
 int main(int argc, char *argv[])
@@ -70,7 +67,7 @@ int main(int argc, char *argv[])
         } else {
             app_poll_stdin();
         }
-        usleep(sleep_ms * 1000);
+        hal_delay_ms(sleep_ms);
     }
 
     app_deinit();

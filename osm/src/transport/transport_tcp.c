@@ -6,6 +6,7 @@
  * Fragmentation: [1 byte flags][2 bytes seq][payload]
  */
 #include "transport.h"
+#include "../hal/hal_log.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -48,7 +49,7 @@ bool transport_start(transport_t *t)
 {
     t->server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (t->server_fd < 0) {
-        fprintf(stderr, "[transport] socket() failed: %s\n", strerror(errno));
+        hal_log("Transport", "socket() failed");
         return false;
     }
 
@@ -63,22 +64,25 @@ bool transport_start(transport_t *t)
     };
 
     if (bind(t->server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        fprintf(stderr, "[transport] bind(%d) failed: %s\n",
-                t->port, strerror(errno));
+        hal_log("Transport", "bind() failed");
         close(t->server_fd);
         t->server_fd = -1;
         return false;
     }
 
     if (listen(t->server_fd, TRANSPORT_MAX_CLIENTS) < 0) {
-        fprintf(stderr, "[transport] listen() failed: %s\n", strerror(errno));
+        hal_log("Transport", "listen() failed");
         close(t->server_fd);
         t->server_fd = -1;
         return false;
     }
 
     t->running = true;
-    fprintf(stderr, "[transport] Listening on port %d\n", t->port);
+    {
+        char msg[48];
+        snprintf(msg, sizeof(msg), "Listening on port %d", t->port);
+        hal_log("Transport", msg);
+    }
     return true;
 }
 
@@ -117,7 +121,7 @@ static void accept_new_clients(transport_t *t)
     int slot = find_free_slot(t);
     if (slot < 0) {
         close(cfd);
-        fprintf(stderr, "[transport] Rejected connection (no slots)\n");
+        hal_log("Transport", "Rejected connection (no slots)");
         return;
     }
 
@@ -134,7 +138,11 @@ static void accept_new_clients(transport_t *t)
     c->tcp_buf_len = 0;
     snprintf(c->name, sizeof(c->name), "CA-%d", slot);
 
-    fprintf(stderr, "[transport] Client %d connected\n", slot);
+    {
+        char msg[32];
+        snprintf(msg, sizeof(msg), "Client %d connected", slot);
+        hal_log("Transport", msg);
+    }
     if (t->callbacks.on_connect)
         t->callbacks.on_connect(slot);
 }
@@ -160,7 +168,11 @@ static void read_client(transport_t *t, int idx)
             c->rx_active = false;
             c->rx_len = 0;
             c->tcp_buf_len = 0;
-            fprintf(stderr, "[transport] Client %d disconnected\n", idx);
+            {
+                char msg[32];
+                snprintf(msg, sizeof(msg), "Client %d disconnected", idx);
+                hal_log("Transport", msg);
+            }
             if (t->callbacks.on_disconnect)
                 t->callbacks.on_disconnect(idx);
         }

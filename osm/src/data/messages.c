@@ -115,7 +115,8 @@ void messages_save(void)
                 (i < g_app.message_count - 1) ? "," : "");
     }
     pos += snprintf(buf + pos, buf_size - pos, "]\n");
-    hal_storage_write_file(MESSAGES_FILE, buf, (size_t)pos);
+    if (!hal_storage_write_file(MESSAGES_FILE, buf, (size_t)pos))
+        g_app.storage_error = true;
     free(buf);
 }
 

@@ -11,6 +11,7 @@
 #include "screens/scr_conversation.h"
 #include "screens/scr_assign_key.h"
 #include "hal/hal_log.h"
+#include "hal/hal_rng.h"
 #include "hal/hal_storage.h"
 #include "hal/hal_storage_util.h"
 #include <stdio.h>
@@ -28,6 +29,15 @@
 #endif
 
 app_state_t g_app;
+
+/* Track storage write failures */
+static void storage_check_write(const char *file, bool ok)
+{
+    if (!ok) {
+        app_log("Storage", "WRITE FAILED");
+        g_app.storage_error = true;
+    }
+}
 
 /* Forward declarations for test driver */
 #ifndef OSM_MCU_BUILD
@@ -268,6 +278,23 @@ void app_init(lv_display_t *disp,
         fprintf(stderr, "FATAL: Could not init storage\n");
     }
 
+    /* RNG self-test: verify entropy source is functional */
+    {
+        uint8_t rng_test[32];
+        memset(rng_test, 0, sizeof(rng_test));
+        hal_random_bytes(rng_test, sizeof(rng_test));
+        bool all_zero = true;
+        for (size_t i = 0; i < sizeof(rng_test); i++) {
+            if (rng_test[i] != 0) { all_zero = false; break; }
+        }
+        if (all_zero) {
+            fprintf(stderr, "FATAL: RNG self-test failed (all zeros)\n");
+        } else {
+            app_log("RNG", "Self-test passed");
+        }
+        memset(rng_test, 0, sizeof(rng_test));
+    }
+
 #ifndef OSM_MCU_BUILD
     mkdir("screenshots", 0755);
 #endif
@@ -335,6 +362,13 @@ void app_init(lv_display_t *disp,
     }
 }
 
+/* Volatile memset — compiler cannot optimize away */
+static void secure_zero(void *p, size_t n)
+{
+    volatile unsigned char *v = (volatile unsigned char *)p;
+    while (n--) *v++ = 0;
+}
+
 void app_deinit(void)
 {
     transport_stop(&g_app.transport);
@@ -342,6 +376,11 @@ void app_deinit(void)
     messages_save();
     app_outbox_save();
     hal_storage_deinit();
+
+    /* Zero private key material before exit */
+    secure_zero(g_app.identity.privkey, sizeof(g_app.identity.privkey));
+    secure_zero(g_app.identity.pubkey, sizeof(g_app.identity.pubkey));
+    g_app.identity.valid = false;
 }
 
 bool app_should_quit(void)
@@ -417,21 +456,27 @@ void app_transport_poll(void)
 
 void app_outbox_save(void)
 {
-    char buf[8192];
+    /* Each entry can be ~2KB (MAX_CIPHER_LEN), use heap */
+    size_t buf_size = 64 + g_app.outbox_count * (MAX_CIPHER_LEN + 128);
+    char *buf = malloc(buf_size);
+    if (!buf) { g_app.storage_error = true; return; }
+
     int pos = 0;
-    pos += snprintf(buf + pos, sizeof(buf) - pos, "[\n");
+    pos += snprintf(buf + pos, buf_size - pos, "[\n");
     for (uint32_t i = 0; i < g_app.outbox_count; i++) {
         outbox_entry_t *e = &g_app.outbox[i];
         char hex[TRANSPORT_ACK_ID_LEN * 2 + 1];
         for (int k = 0; k < TRANSPORT_ACK_ID_LEN; k++)
             snprintf(hex + k * 2, 3, "%02x", e->msg_id[k]);
-        pos += snprintf(buf + pos, sizeof(buf) - pos,
+        pos += snprintf(buf + pos, buf_size - pos,
                 "  {\"uuid\":%u,\"id\":\"%s\",\"data\":\"%s\"}%s\n",
                 e->char_uuid, hex, e->data,
                 (i < g_app.outbox_count - 1) ? "," : "");
     }
-    pos += snprintf(buf + pos, sizeof(buf) - pos, "]\n");
-    hal_storage_write_file(OUTBOX_FILE, buf, (size_t)pos);
+    pos += snprintf(buf + pos, buf_size - pos, "]\n");
+    storage_check_write(OUTBOX_FILE,
+                        hal_storage_write_file(OUTBOX_FILE, buf, (size_t)pos));
+    free(buf);
 }
 
 void app_outbox_load(void)
@@ -540,7 +585,8 @@ void app_pending_keys_save(void)
                 (i < g_app.pending_key_count - 1) ? "," : "");
     }
     pos += snprintf(buf + pos, sizeof(buf) - pos, "]\n");
-    hal_storage_write_file(PENDING_KEYS_FILE, buf, (size_t)pos);
+    storage_check_write(PENDING_KEYS_FILE,
+                        hal_storage_write_file(PENDING_KEYS_FILE, buf, (size_t)pos));
 }
 
 void app_pending_keys_load(void)
@@ -706,6 +752,12 @@ static void process_stdin_command(char *cmd)
             fprintf(stdout, "CMD:PENDING:%u:%s\n", i, g_app.pending_keys[i].pubkey_b64);
             fflush(stdout);
         }
+        for (uint32_t i = 0; i < g_app.message_count; i++) {
+            message_t *m = &g_app.messages[i];
+            fprintf(stdout, "CMD:MSG:%u:%u:%d:%s\n",
+                   m->id, m->contact_id, m->direction, m->plaintext);
+            fflush(stdout);
+        }
         fprintf(stdout, "CMD:STATE:END\n");
         fflush(stdout);
     }
@@ -841,6 +893,38 @@ static void process_stdin_command(char *cmd)
         }
         printf("CMD:OK:recv_count:%s:%u\n", name, recv_count);
         fflush(stdout);
+    }
+    /* CMD:DELETE:<name> — delete a contact and its messages */
+    else if (strncmp(cmd, "CMD:DELETE:", 11) == 0) {
+        const char *name = cmd + 11;
+        contact_t *c = contacts_find_by_name(name);
+        if (!c) { printf("CMD:ERR:contact_not_found:%s\n", name); fflush(stdout); return; }
+        uint32_t cid = c->id;
+        messages_delete_for_contact(cid);
+        contacts_delete(cid);
+        contacts_save();
+        messages_save();
+        printf("CMD:OK:delete:%s\n", name);
+        fflush(stdout);
+    }
+    /* CMD:DELETE_MSG:<text_substring> — delete first message matching text */
+    else if (strncmp(cmd, "CMD:DELETE_MSG:", 15) == 0) {
+        const char *needle = cmd + 15;
+        bool found = false;
+        for (uint32_t i = 0; i < g_app.message_count; i++) {
+            if (strstr(g_app.messages[i].plaintext, needle)) {
+                messages_delete_by_id(g_app.messages[i].id);
+                messages_save();
+                printf("CMD:OK:delete_msg\n");
+                fflush(stdout);
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            printf("CMD:ERR:msg_not_found:%s\n", needle);
+            fflush(stdout);
+        }
     }
     /*================================================================
      * UI-DRIVEN commands: these click actual LVGL widgets,

@@ -2,7 +2,6 @@
 #include "tweetnacl.h"
 #include "hal/hal_rng.h"
 #include <string.h>
-#include <stdlib.h>
 #include <stdio.h>
 
 /* ---- randombytes (required by TweetNaCl) — delegates to HAL ---- */
@@ -95,6 +94,10 @@ void crypto_generate_keypair(crypto_identity_t *id)
     id->valid = true;
 }
 
+/* Max work buffer for encrypt/decrypt (1024 text + crypto_box overhead) */
+#define CRYPTO_MAX_PADDED  (1024 + 64)  /* ~1088, covers ZEROBYTES padding */
+#define CRYPTO_MAX_RAW     (CRYPTO_MAX_PADDED + CRYPTO_NONCE_BYTES)
+
 /* ---- Encrypt ---- */
 bool crypto_encrypt(const char *plaintext,
                     const uint8_t peer_pubkey[CRYPTO_PUBKEY_BYTES],
@@ -104,10 +107,13 @@ bool crypto_encrypt(const char *plaintext,
     size_t pt_len = strlen(plaintext);
     size_t padded_len = pt_len + crypto_box_ZEROBYTES;
 
-    /* Allocate zero-padded plaintext buffer */
-    uint8_t *m = calloc(1, padded_len);
-    uint8_t *c = calloc(1, padded_len);
-    if (!m || !c) { free(m); free(c); return false; }
+    if (padded_len > CRYPTO_MAX_PADDED) return false;
+
+    /* Stack-allocated work buffers */
+    uint8_t m[CRYPTO_MAX_PADDED];
+    uint8_t c[CRYPTO_MAX_PADDED];
+    memset(m, 0, padded_len);
+    memset(c, 0, padded_len);
 
     memcpy(m + crypto_box_ZEROBYTES, plaintext, pt_len);
 
@@ -117,22 +123,25 @@ bool crypto_encrypt(const char *plaintext,
 
     /* Encrypt */
     if (crypto_box(c, m, padded_len, nonce, peer_pubkey, my_privkey) != 0) {
-        free(m); free(c);
+        memset(m, 0, padded_len);
+        memset(c, 0, padded_len);
         return false;
     }
 
     /* Output: [nonce (24)][ciphertext without BOXZEROBYTES padding] */
     size_t ct_payload = padded_len - crypto_box_BOXZEROBYTES;
     size_t raw_len = CRYPTO_NONCE_BYTES + ct_payload;
-    uint8_t *raw = malloc(raw_len);
-    if (!raw) { free(m); free(c); return false; }
+    uint8_t raw[CRYPTO_MAX_RAW];
 
     memcpy(raw, nonce, CRYPTO_NONCE_BYTES);
     memcpy(raw + CRYPTO_NONCE_BYTES, c + crypto_box_BOXZEROBYTES, ct_payload);
 
     size_t encoded = crypto_b64_encode(raw, raw_len, out_b64, out_b64_len);
 
-    free(m); free(c); free(raw);
+    /* Zero sensitive buffers */
+    memset(m, 0, padded_len);
+    memset(c, 0, padded_len);
+    memset(raw, 0, raw_len);
     return encoded > 0;
 }
 
@@ -145,13 +154,12 @@ bool crypto_decrypt(const char *cipher_b64,
     /* Decode base64 */
     size_t b64_len = strlen(cipher_b64);
     size_t max_raw = (b64_len * 3) / 4 + 4;
-    uint8_t *raw = malloc(max_raw);
-    if (!raw) return false;
+    if (max_raw > CRYPTO_MAX_RAW) return false;
 
+    uint8_t raw[CRYPTO_MAX_RAW];
     size_t raw_len = 0;
     if (!crypto_b64_decode(cipher_b64, raw, max_raw, &raw_len) ||
         raw_len < CRYPTO_NONCE_BYTES + CRYPTO_MAC_BYTES + 1) {
-        free(raw);
         return false;
     }
 
@@ -162,16 +170,20 @@ bool crypto_decrypt(const char *cipher_b64,
     size_t ct_payload = raw_len - CRYPTO_NONCE_BYTES;
     size_t padded_len = ct_payload + crypto_box_BOXZEROBYTES;
 
-    uint8_t *c = calloc(1, padded_len);
-    uint8_t *m = calloc(1, padded_len);
-    if (!c || !m) { free(raw); free(c); free(m); return false; }
+    if (padded_len > CRYPTO_MAX_PADDED) return false;
+
+    uint8_t c[CRYPTO_MAX_PADDED];
+    uint8_t m[CRYPTO_MAX_PADDED];
+    memset(c, 0, padded_len);
+    memset(m, 0, padded_len);
 
     memcpy(c + crypto_box_BOXZEROBYTES, raw + CRYPTO_NONCE_BYTES, ct_payload);
-    free(raw);
+    memset(raw, 0, raw_len);
 
     /* Decrypt and authenticate */
     if (crypto_box_open(m, c, padded_len, nonce, peer_pubkey, my_privkey) != 0) {
-        free(c); free(m);
+        memset(c, 0, padded_len);
+        memset(m, 0, padded_len);
         return false;
     }
 
@@ -181,6 +193,8 @@ bool crypto_decrypt(const char *cipher_b64,
     memcpy(plaintext, m + crypto_box_ZEROBYTES, actual_pt);
     plaintext[actual_pt] = '\0';
 
-    free(c); free(m);
+    /* Zero sensitive buffers */
+    memset(c, 0, padded_len);
+    memset(m, 0, padded_len);
     return true;
 }

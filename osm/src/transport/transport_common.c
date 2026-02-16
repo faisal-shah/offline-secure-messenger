@@ -42,6 +42,11 @@ void transport_process_fragment(transport_t *t, int client_idx,
         c->rx_active = true;
 
         if (payload_len < 2) return;
+        uint16_t total_len = payload[0] | ((uint16_t)payload[1] << 8);
+        if (total_len > TRANSPORT_MAX_MSG_SIZE) {
+            c->rx_active = false;
+            return;
+        }
         payload += 2;
         payload_len -= 2;
     }

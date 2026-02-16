@@ -1,4 +1,5 @@
 #include "identity.h"
+#include "../app.h"
 #include "../hal/hal_storage_util.h"
 #include <stdio.h>
 #include <string.h>
@@ -41,21 +42,29 @@ bool identity_load(crypto_identity_t *id)
     if (!extract_json_string(buf, "pubkey", pubkey_b64, sizeof(pubkey_b64)) ||
         !extract_json_string(buf, "privkey", privkey_b64, sizeof(privkey_b64))) {
         free(buf);
+        memset(pubkey_b64, 0, sizeof(pubkey_b64));
+        memset(privkey_b64, 0, sizeof(privkey_b64));
         return false;
     }
 
     free(buf);
 
     size_t pub_len = 0, priv_len = 0;
+    bool ok = true;
     if (!crypto_b64_decode(pubkey_b64, id->pubkey, CRYPTO_PUBKEY_BYTES, &pub_len) ||
         pub_len != CRYPTO_PUBKEY_BYTES) {
-        return false;
+        ok = false;
     }
-    if (!crypto_b64_decode(privkey_b64, id->privkey, CRYPTO_PRIVKEY_BYTES, &priv_len) ||
-        priv_len != CRYPTO_PRIVKEY_BYTES) {
-        return false;
+    if (ok && (!crypto_b64_decode(privkey_b64, id->privkey, CRYPTO_PRIVKEY_BYTES, &priv_len) ||
+        priv_len != CRYPTO_PRIVKEY_BYTES)) {
+        ok = false;
     }
 
+    /* Zero b64 buffers that held key material */
+    memset(pubkey_b64, 0, sizeof(pubkey_b64));
+    memset(privkey_b64, 0, sizeof(privkey_b64));
+
+    if (!ok) return false;
     id->valid = true;
     return true;
 }
@@ -72,5 +81,10 @@ void identity_save(const crypto_identity_t *id)
     int len = snprintf(buf, sizeof(buf),
             "{\n  \"pubkey\": \"%s\",\n  \"privkey\": \"%s\"\n}\n",
             pubkey_b64, privkey_b64);
-    hal_storage_write_file(IDENTITY_FILE, buf, (size_t)len);
+    if (!hal_storage_write_file(IDENTITY_FILE, buf, (size_t)len))
+        g_app.storage_error = true;
+
+    /* Zero b64 buffers that held key material */
+    memset(pubkey_b64, 0, sizeof(pubkey_b64));
+    memset(privkey_b64, 0, sizeof(privkey_b64));
 }

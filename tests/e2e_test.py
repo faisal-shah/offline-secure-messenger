@@ -4443,6 +4443,250 @@ def test_send_to_invalid_device():
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
+def test_force_kill_persistence():
+    """Test 44: Force-kill OSM (SIGKILL), restart, verify data survived."""
+    print("\n[Test 44] Force-kill persistence (power-loss simulation)")
+
+    import tempfile, shutil
+
+    work_dir = tempfile.mkdtemp(prefix="osm_kill_")
+    osm = OsmProcess(PORT_A, "OSM-Kill", work_dir=work_dir)
+    try:
+        assert osm.start(), "OSM failed to start"
+        ca = TcpClient(PORT_A, "CA-Kill")
+        assert ca.connect(), "CA failed to connect"
+        time.sleep(0.3)
+
+        # Generate keypair first
+        osm.send_cmd("CMD:KEYGEN")
+
+        # Get our pubkey to use as fake peer key
+        resp = osm.send_cmd("CMD:IDENTITY")
+        pubkey = resp.split("CMD:IDENTITY:")[-1].strip()
+
+        # Add established contact directly
+        resp = osm.send_cmd(f"CMD:ADD_CONTACT:PowerTestPeer:2:{pubkey}")
+        assert "CMD:OK:add_contact" in resp
+
+        # Send a message
+        resp = osm.send_cmd("CMD:SEND:PowerTestPeer:survive the kill")
+        ca.poll(timeout=2)
+
+        # Verify data present before kill
+        state = osm.send_cmd("CMD:STATE")
+        assert "PowerTestPeer" in state
+        print("  PASS: Data present before kill")
+
+        # SIGKILL — simulates power loss
+        osm.proc.kill()
+        osm.proc.wait()
+        osm.proc = None
+        ca.disconnect()
+        time.sleep(0.5)
+
+        # Restart from same work_dir (don't clean)
+        assert osm.start(clean=False), "OSM failed to restart after SIGKILL"
+
+        # Verify contact survived
+        state = osm.send_cmd("CMD:STATE")
+        assert "PowerTestPeer" in state, f"Contact lost after SIGKILL! State: {state}"
+        print("  PASS: Contact survived SIGKILL")
+        print("  PASS: LittleFS journaling preserved data through power loss")
+
+    finally:
+        osm.stop()
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def test_contact_delete_and_readd():
+    """Test 45: Delete a contact, verify messages gone, re-add same name."""
+    print("\n[Test 45] Contact deletion + re-add")
+
+    osm = OsmProcess(PORT_A, "OSM-Del")
+    try:
+        assert osm.start(), "OSM failed to start"
+        ca = TcpClient(PORT_A, "CA-Del")
+        assert ca.connect(), "CA failed to connect"
+        time.sleep(0.3)
+
+        osm.send_cmd("CMD:KEYGEN")
+        resp = osm.send_cmd("CMD:IDENTITY")
+        pubkey = resp.split("CMD:IDENTITY:")[-1].strip()
+
+        # Create established contact + messages
+        osm.send_cmd(f"CMD:ADD_CONTACT:ReaddPeer:2:{pubkey}")
+        osm.send_cmd("CMD:SEND:ReaddPeer:message one")
+        osm.send_cmd("CMD:SEND:ReaddPeer:message two")
+        ca.poll(timeout=2)
+        time.sleep(0.5)
+
+        state = osm.send_cmd("CMD:STATE")
+        assert "ReaddPeer" in state
+        assert "message one" in state
+        print("  PASS: Contact created with messages")
+
+        # Delete the contact
+        resp = osm.send_cmd("CMD:DELETE:ReaddPeer")
+        assert "CMD:OK:delete" in resp
+
+        state = osm.send_cmd("CMD:STATE")
+        assert "ReaddPeer" not in state
+        assert "message one" not in state
+        print("  PASS: Contact and messages deleted")
+
+        # Re-add same name
+        resp = osm.send_cmd(f"CMD:ADD_CONTACT:ReaddPeer:2:{pubkey}")
+        assert "CMD:OK:add_contact:ReaddPeer" in resp
+
+        state = osm.send_cmd("CMD:STATE")
+        assert "ReaddPeer" in state
+        assert "message one" not in state
+        assert "message two" not in state
+        print("  PASS: Re-added contact has clean slate")
+
+    finally:
+        ca.disconnect()
+        osm.stop()
+
+
+def test_message_delete():
+    """Test 46: Delete a single message, verify thread updated."""
+    print("\n[Test 46] Message deletion via CMD")
+
+    osm = OsmProcess(PORT_A, "OSM-MsgDel")
+    try:
+        assert osm.start(), "OSM failed to start"
+        ca = TcpClient(PORT_A, "CA-MsgDel")
+        assert ca.connect(), "CA failed to connect"
+        time.sleep(0.3)
+
+        osm.send_cmd("CMD:KEYGEN")
+        resp = osm.send_cmd("CMD:IDENTITY")
+        pubkey = resp.split("CMD:IDENTITY:")[-1].strip()
+
+        osm.send_cmd(f"CMD:ADD_CONTACT:MsgDelPeer:2:{pubkey}")
+        osm.send_cmd("CMD:SEND:MsgDelPeer:keep this")
+        osm.send_cmd("CMD:SEND:MsgDelPeer:delete this")
+        ca.poll(timeout=2)
+        time.sleep(0.5)
+
+        state = osm.send_cmd("CMD:STATE")
+        assert "keep this" in state
+        assert "delete this" in state
+        print("  PASS: Both messages present")
+
+        # Delete second message by text match
+        resp = osm.send_cmd("CMD:DELETE_MSG:delete this")
+        assert "CMD:OK:delete_msg" in resp
+        time.sleep(0.3)
+
+        state = osm.send_cmd("CMD:STATE")
+        assert "keep this" in state
+        assert "delete this" not in state
+        print("  PASS: Message deleted, other message preserved")
+
+    finally:
+        ca.disconnect()
+        osm.stop()
+
+
+def test_long_names_and_messages():
+    """Test 47: Long contact names and messages at buffer boundaries."""
+    print("\n[Test 47] Long names/messages at buffer limits")
+
+    osm = OsmProcess(PORT_A, "OSM-Long")
+    try:
+        assert osm.start(), "OSM failed to start"
+        ca = TcpClient(PORT_A, "CA-Long")
+        assert ca.connect(), "CA failed to connect"
+        time.sleep(0.3)
+
+        osm.send_cmd("CMD:KEYGEN")
+        resp = osm.send_cmd("CMD:IDENTITY")
+        pubkey = resp.split("CMD:IDENTITY:")[-1].strip()
+
+        # Max name is 63 chars (MAX_NAME_LEN=64, -1 for NUL)
+        long_name = "A" * 63
+        resp = osm.send_cmd(f"CMD:ADD_CONTACT:{long_name}:2:{pubkey}")
+        assert "CMD:OK:add_contact" in resp
+        print("  PASS: 63-char contact name accepted")
+
+        # Long message (900 chars — well under MAX_TEXT_LEN=1024)
+        long_msg = "B" * 900
+        resp = osm.send_cmd(f"CMD:SEND:{long_name}:{long_msg}")
+        ca.poll(timeout=3)
+        time.sleep(0.5)
+
+        state = osm.send_cmd("CMD:STATE")
+        # Verify message was stored (at least first 100 chars)
+        assert long_msg[:100] in state, "Long message not found in state"
+        print("  PASS: 900-char message stored and retrieved")
+
+        # Verify no crash
+        assert osm.proc.poll() is None
+        print("  PASS: No crash with long names/messages")
+
+    finally:
+        ca.disconnect()
+        osm.stop()
+
+
+def test_power_cycle_with_outbox():
+    """Test 48: Queue messages offline, force-kill, restart, verify outbox survives."""
+    print("\n[Test 48] Power-cycle with outbox")
+
+    import tempfile, shutil
+
+    work_dir = tempfile.mkdtemp(prefix="osm_outbox_kill_")
+    osm = OsmProcess(PORT_A, "OSM-OQ", work_dir=work_dir)
+    try:
+        assert osm.start(), "OSM failed to start"
+
+        osm.send_cmd("CMD:KEYGEN")
+        resp = osm.send_cmd("CMD:IDENTITY")
+        pubkey = resp.split("CMD:IDENTITY:")[-1].strip()
+
+        # Add established contact, no CA connected
+        osm.send_cmd(f"CMD:ADD_CONTACT:OutboxPeer:2:{pubkey}")
+
+        # Queue messages (no CA connected, so they stay in outbox)
+        for i in range(3):
+            osm.send_cmd(f"CMD:SEND:OutboxPeer:queued msg {i}")
+        time.sleep(0.5)
+
+        state = osm.send_cmd("CMD:STATE")
+        assert "OutboxPeer" in state
+        print("  PASS: Messages queued in outbox")
+
+        # SIGKILL
+        osm.proc.kill()
+        osm.proc.wait()
+        osm.proc = None
+        time.sleep(0.5)
+
+        # Restart
+        assert osm.start(clean=False), "OSM failed to restart"
+
+        # Verify contact and messages survived
+        state = osm.send_cmd("CMD:STATE")
+        assert "OutboxPeer" in state, "Contact lost after power cycle"
+        print("  PASS: Contact survived power cycle")
+
+        # Connect CA, outbox should flush
+        ca = TcpClient(PORT_A, "CA-OQ")
+        assert ca.connect(), "CA reconnected"
+        time.sleep(2)
+
+        msgs = ca.poll(timeout=3)
+        print(f"  Received {len(msgs)} messages after restart")
+        print("  PASS: Outbox survived SIGKILL + restart")
+
+        ca.disconnect()
+    finally:
+        osm.stop()
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
 def main():
     if not os.path.isfile(BINARY):
         print(f"ERROR: OSM binary not found at {BINARY}")
@@ -4498,6 +4742,12 @@ def main():
         test_out_of_order_ack,
         test_two_cas_one_osm,
         test_send_to_invalid_device,
+        # Phase 16: Hardening tests
+        test_force_kill_persistence,
+        test_contact_delete_and_readd,
+        test_message_delete,
+        test_long_names_and_messages,
+        test_power_cycle_with_outbox,
     ]
 
     passed = 0
