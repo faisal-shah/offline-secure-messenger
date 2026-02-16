@@ -125,8 +125,8 @@ cd ../..
 SDL_VIDEODRIVER=dummy python3 -m pytest tests/e2e_test.py -v
 ```
 
-43 tests: full KEX flows, encrypted messaging, outbox persistence, reconnection,
-adversarial scenarios (disconnect, restart, overflow, corrupt fragments).
+51 tests: full KEX flows, encrypted messaging, outbox persistence, reconnection,
+adversarial scenarios, contact rename, screen navigation, empty conversations.
 
 Requires: `pytest`, `pynacl` (`pip install pytest pynacl`).
 
@@ -175,6 +175,7 @@ programmatically; responses go to stdout prefixed with `CMD:`.
 | `CMD:RECV_COUNT:<n>` | Simulate receiving n incoming messages |
 | `CMD:DELETE:<name>` | Delete contact and their messages |
 | `CMD:DELETE_MSG:<text>` | Delete first message matching text |
+| `CMD:RENAME:<old>:<new>` | Rename a contact |
 
 ### UI-Driven Commands
 

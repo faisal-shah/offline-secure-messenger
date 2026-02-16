@@ -1471,14 +1471,14 @@ static void test_execute_step(void)
     case 20: { /* Click [+] to open add contact dialog */
         printf("[Step 20] Click [+] add contact button\n");
         lv_obj_t *contacts_scr = g_app.screens[SCR_CONTACTS];
-        /* Header is child 0, add button is rightmost child of header */
-        lv_obj_t *header = lv_obj_get_child(contacts_scr, 0);
-        uint32_t hcnt = lv_obj_get_child_count(header);
-        lv_obj_t *add_btn = lv_obj_get_child(header, hcnt - 1);
+        /* status_bar is child 0, add button is last child of status_bar */
+        lv_obj_t *status_bar = lv_obj_get_child(contacts_scr, 0);
+        uint32_t hcnt = lv_obj_get_child_count(status_bar);
+        lv_obj_t *add_btn = lv_obj_get_child(status_bar, hcnt - 1);
         lv_obj_send_event(add_btn, LV_EVENT_CLICKED, NULL);
         lv_timer_handler();
-        /* Name input overlay should be visible */
-        lv_obj_t *overlay = lv_obj_get_child(contacts_scr, 2); /* overlay is 3rd child */
+        /* Name input overlay (name_input_cont) is child 3 */
+        lv_obj_t *overlay = lv_obj_get_child(contacts_scr, 3);
         bool visible = !lv_obj_has_flag(overlay, LV_OBJ_FLAG_HIDDEN);
         if (visible) test_pass("Add contact dialog opened");
         else test_fail("Dialog not visible");
@@ -1488,7 +1488,7 @@ static void test_execute_step(void)
     case 21: { /* Type contact name and click Create */
         printf("[Step 21] Type name 'Charlie' and click Create\n");
         lv_obj_t *contacts_scr = g_app.screens[SCR_CONTACTS];
-        lv_obj_t *overlay = lv_obj_get_child(contacts_scr, 2);
+        lv_obj_t *overlay = lv_obj_get_child(contacts_scr, 3);
         /* Find textarea in overlay (child 1) and OK button (child 2) */
         lv_obj_t *ta = lv_obj_get_child(overlay, 1);
         lv_obj_t *ok_btn = lv_obj_get_child(overlay, 2);
@@ -1509,7 +1509,7 @@ static void test_execute_step(void)
     case 22: { /* Click Back from Key Exchange → Contacts */
         printf("[Step 22] Click Back from Key Exchange\n");
         lv_obj_t *ke_scr = g_app.screens[SCR_KEY_EXCHANGE];
-        lv_obj_t *header = lv_obj_get_child(ke_scr, 0);
+        lv_obj_t *header = lv_obj_get_child(ke_scr, 1);
         lv_obj_t *back_btn = lv_obj_get_child(header, 0);
         lv_obj_send_event(back_btn, LV_EVENT_CLICKED, NULL);
         lv_timer_handler();
@@ -1557,7 +1557,7 @@ static void test_execute_step(void)
         printf("[Step 25] Navigate Contacts → Conversation via contact\n");
         /* Back from key exchange */
         lv_obj_t *ke_scr = g_app.screens[SCR_KEY_EXCHANGE];
-        lv_obj_t *ke_header = lv_obj_get_child(ke_scr, 0);
+        lv_obj_t *ke_header = lv_obj_get_child(ke_scr, 1);
         lv_obj_t *back_btn = lv_obj_get_child(ke_header, 0);
         lv_obj_send_event(back_btn, LV_EVENT_CLICKED, NULL);
         lv_timer_handler();
@@ -1593,7 +1593,7 @@ static void test_execute_step(void)
     case 27: { /* Click Back to Contacts, then navigate to Inbox */
         printf("[Step 27] Navigate to Inbox via clicks\n");
         lv_obj_t *convo_scr2 = g_app.screens[SCR_CONVERSATION];
-        lv_obj_t *c_header = lv_obj_get_child(convo_scr2, 0);
+        lv_obj_t *c_header = lv_obj_get_child(convo_scr2, 1);
         lv_obj_t *back_btn = lv_obj_get_child(c_header, 0);
         lv_obj_send_event(back_btn, LV_EVENT_CLICKED, NULL);
         lv_timer_handler();
@@ -1627,8 +1627,8 @@ static void test_execute_step(void)
     case 29: { /* Type reply in conversation and send */
         printf("[Step 29] Type reply in Conversation and send\n");
         lv_obj_t *convo_scr = g_app.screens[SCR_CONVERSATION];
-        /* reply_bar is child 2, reply_ta is child 0 of reply_bar, send_btn is child 1 */
-        lv_obj_t *reply_bar = lv_obj_get_child(convo_scr, 2);
+        /* reply_bar is child 3, reply_ta is child 0 of reply_bar, send_btn is child 1 */
+        lv_obj_t *reply_bar = lv_obj_get_child(convo_scr, 3);
         lv_obj_t *ta = lv_obj_get_child(reply_bar, 0);
         lv_obj_t *send_btn_obj = lv_obj_get_child(reply_bar, 1);
         lv_textarea_set_text(ta, "Interactive reply message!");
@@ -1641,23 +1641,23 @@ static void test_execute_step(void)
         break;
     }
 
-    case 30: { /* Click Back from Conversation → Inbox → Home */
-        printf("[Step 30] Navigate back: Conversation → Inbox → Home\n");
+    case 30: { /* Click Back from Conversation → Inbox → Contacts (via tab) */
+        printf("[Step 30] Navigate back: Conversation → Inbox → Contacts (via tab)\n");
         /* Back from Conversation */
         lv_obj_t *convo_scr = g_app.screens[SCR_CONVERSATION];
-        lv_obj_t *c_header = lv_obj_get_child(convo_scr, 0);
+        lv_obj_t *c_header = lv_obj_get_child(convo_scr, 1);
         lv_obj_t *back1 = lv_obj_get_child(c_header, 0);
         lv_obj_send_event(back1, LV_EVENT_CLICKED, NULL);
         lv_timer_handler();
         if (g_app.current_screen != SCR_INBOX) { test_fail("Not on Inbox after back"); break; }
-        /* Back from Inbox */
+        /* Inbox → Contacts via tab_bar (child 2), Contacts tab is child 0 */
         lv_obj_t *inbox_scr = g_app.screens[SCR_INBOX];
-        lv_obj_t *i_header = lv_obj_get_child(inbox_scr, 0);
-        lv_obj_t *back2 = lv_obj_get_child(i_header, 0);
-        lv_obj_send_event(back2, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *tab_bar = lv_obj_get_child(inbox_scr, 2);
+        lv_obj_t *contacts_tab = lv_obj_get_child(tab_bar, 0);
+        lv_obj_send_event(contacts_tab, LV_EVENT_CLICKED, NULL);
         lv_timer_handler();
         if (g_app.current_screen == SCR_CONTACTS) test_pass("Full back navigation chain");
-        else test_fail("Not on Contacts after double back");
+        else test_fail("Not on Contacts after tab click");
         app_take_screenshot("25_interactive_contacts_final");
         break;
     }
@@ -1711,13 +1711,13 @@ static void test_execute_step(void)
         lv_timer_handler();
         /* Click [+] */
         lv_obj_t *contacts_scr = g_app.screens[SCR_CONTACTS];
-        lv_obj_t *header = lv_obj_get_child(contacts_scr, 0);
-        uint32_t hcnt = lv_obj_get_child_count(header);
-        lv_obj_t *add_btn = lv_obj_get_child(header, hcnt - 1);
+        lv_obj_t *status_bar = lv_obj_get_child(contacts_scr, 0);
+        uint32_t hcnt = lv_obj_get_child_count(status_bar);
+        lv_obj_t *add_btn = lv_obj_get_child(status_bar, hcnt - 1);
         lv_obj_send_event(add_btn, LV_EVENT_CLICKED, NULL);
         lv_timer_handler();
         /* Type name and create */
-        lv_obj_t *overlay = lv_obj_get_child(contacts_scr, 2);
+        lv_obj_t *overlay = lv_obj_get_child(contacts_scr, 3);
         lv_obj_t *ta = lv_obj_get_child(overlay, 1);
         lv_obj_t *ok_btn = lv_obj_get_child(overlay, 2);
         lv_textarea_set_text(ta, "Diana");
@@ -1729,7 +1729,7 @@ static void test_execute_step(void)
         else test_fail("Diana creation failed");
         /* Go back to contacts */
         lv_obj_t *ke_scr = g_app.screens[SCR_KEY_EXCHANGE];
-        lv_obj_t *ke_hdr = lv_obj_get_child(ke_scr, 0);
+        lv_obj_t *ke_hdr = lv_obj_get_child(ke_scr, 1);
         lv_obj_t *back_btn = lv_obj_get_child(ke_hdr, 0);
         lv_obj_send_event(back_btn, LV_EVENT_CLICKED, NULL);
         lv_timer_handler();
@@ -1796,8 +1796,8 @@ static void test_execute_step(void)
 
         /* Verify the contact list is populated */
         lv_obj_t *scr = g_app.screens[SCR_CONTACTS];
-        /* contact_list is child 2 of screen (header, pending_banner, list) */
-        lv_obj_t *clist = lv_obj_get_child(scr, 2);
+        /* contact_list is child 1 of screen (status_bar, list_cont, ...) */
+        lv_obj_t *clist = lv_obj_get_child(scr, 1);
         uint32_t children = lv_obj_get_child_count(clist);
         /* Should have more than just the empty_label (which is hidden) */
         if (children > 1) test_pass("Contacts screen populated after reload");
@@ -1907,18 +1907,18 @@ static void test_execute_step(void)
 
     case 40: { /* Verify UI dialogs exist on contacts and conversation screens */
         printf("[Step 40] Verify delete UI elements exist\n");
-        /* Contacts screen should have the confirm_del_cont overlay (child 3) */
+        /* Contacts screen should have the confirm_del_cont overlay */
         lv_obj_t *cscr = g_app.screens[SCR_CONTACTS];
         uint32_t cc = lv_obj_get_child_count(cscr);
-        /* Expected: header(0), list_cont(1), name_input_cont(2), confirm_del_cont(3) */
-        if (cc >= 4) test_pass("Contacts screen has delete dialog");
+        /* Expected: status_bar(0), list_cont(1), tab_bar(2), name_input_cont(3), rename_input_cont(4), confirm_del_cont(5) */
+        if (cc >= 6) test_pass("Contacts screen has delete dialog");
         else test_fail("Contacts screen missing delete dialog");
 
         /* Conversation screen should have dialogs */
         lv_obj_t *cvscr = g_app.screens[SCR_CONVERSATION];
         uint32_t cvc = lv_obj_get_child_count(cvscr);
-        /* Expected: header(0), msg_list(1), reply_bar(2), confirm_del_thread(3), confirm_del_msg(4) */
-        if (cvc >= 5) test_pass("Conversation screen has delete dialogs");
+        /* Expected: status_bar(0), header(1), msg_list(2), reply_bar(3), confirm_del_thread(4), confirm_del_msg(5) */
+        if (cvc >= 6) test_pass("Conversation screen has delete dialogs");
         else test_fail("Conversation screen missing delete dialogs");
         break;
     }

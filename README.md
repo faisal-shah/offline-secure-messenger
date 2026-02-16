@@ -53,7 +53,7 @@ offline-secure-messenger/
 ├── companion-app/          # Companion App (Kotlin Multiplatform + Compose)
 │   ├── shared/             # Common code (model, transport, UI)
 │   └── desktopApp/         # Desktop entry point
-├── tests/                  # Integration tests (43 E2E tests)
+├── tests/                  # Integration tests (51 E2E tests)
 ├── AGENTS.md               # AI assistant context (architecture, build, test)
 ├── LICENSE
 └── README.md               # This file
@@ -103,7 +103,7 @@ cd osm
 mkdir -p build && cd build
 cmake .. && make -j$(nproc)
 ./secure_communicator              # Interactive mode (port 19200)
-./secure_communicator --test       # Automated tests (69 built-in tests)
+./secure_communicator --test       # Automated tests (69 built-in + 51 E2E)
 
 # Build OSM with BLE transport (optional)
 mkdir -p ../build_ble && cd ../build_ble
@@ -133,9 +133,9 @@ working directories, then builds and launches matching Companion Apps.
 
 ## E2E Integration Tests
 
-The 43 end-to-end tests exercise the full OSM↔CA protocol over TCP: key
+The 51 end-to-end tests exercise the full OSM↔CA protocol over TCP: key
 exchange, encrypted messaging, outbox persistence, reconnection, adversarial
-scenarios, and more.
+scenarios, contact rename, screen navigation, and more.
 
 ```bash
 # Build OSM first

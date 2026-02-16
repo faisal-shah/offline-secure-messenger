@@ -1,5 +1,7 @@
 osm/build/
+osm/build_ble/
 *.bmp
+*.apk
 osm/data_contacts.json
 osm/data_messages.json
 osm/data_identity.json

@@ -9,13 +9,16 @@ desktop interaction.
 | Screen | Purpose |
 |---|---|
 | **Setup** | First-launch keypair generation wizard (gates all other screens) |
-| **Home** | Dashboard with contact list, status icons, unread badges, CA indicator |
-| **Contacts** | Add/view/delete contacts, tap to start key exchange |
+| **Contacts** | Add/view/rename/delete contacts; message button for established contacts. Bottom tab bar. |
 | **Key Exchange** | 3-step Diffie-Hellman wizard (send → receive → establish) |
 | **Assign Key** | Assign incoming anonymous public keys to contacts |
-| **Compose** | Pick an established contact, type a message, encrypt and send |
-| **Inbox** | Conversation list sorted by most-recent message |
-| **Conversation** | Chat bubbles with inline reply, delete messages or thread |
+| **Inbox** | Conversation list sorted by most-recent message. Bottom tab bar. |
+| **Conversation** | Full-screen chat with inline reply bar, delete messages or thread |
+
+All screens share a **status bar** (20px top) showing device name, pending-key
+badge, and CA connection status. Contacts and Inbox have a **tab bar** (32px
+bottom) for switching between them. Conversation is full-screen with a back
+button returning to the originating tab.
 
 ### Contact Lifecycle
 
@@ -70,7 +73,7 @@ The OSM communicates with the **Companion App (CA)** over a TCP transport
 - OSM listens on TCP port (default: 19200, configurable via `--port`)
 - Fragmentation protocol: `[flags][seq][payload]` with START/END markers
 - Outbound message queue: ciphertext queued when no CA connected, flushed on connect
-- Home screen shows CA connection status indicator
+- Status bar shows CA connection status indicator on all screens
 
 ### Message Envelope Protocol
 
@@ -88,7 +91,7 @@ All messages between OSM and CA use a text-based envelope:
 4. Bob completes exchange → OSM sends `OSM:KEY:<bob_pubkey>`
 5. Alice receives → "Assign Key" → selects "Bob (Pending Sent)" → ESTABLISHED
 
-Incoming keys are stored in a pending queue (max 8). The home screen shows an
+Incoming keys are stored in a pending queue (max 8). The status bar shows an
 orange badge when keys await assignment. Contact names are entirely local — the
 protocol carries no identity information.
 
@@ -137,7 +140,8 @@ cd osm/build
 ```
 
 Runs 69 automated tests covering screens, navigation, input, CRUD, deletion,
-encryption, and transport. Screenshots saved to `osm/screenshots/`. Exits 0 on success.
+encryption, and transport. Screenshots saved to `osm/screenshots/`. Exits 0 on
+success. Additionally, 51 E2E integration tests run via Python.
 
 ### Smoke test
 
@@ -179,12 +183,11 @@ osm/
 │   │   ├── messages.h/c    # Message CRUD + LittleFS persistence
 │   │   └── identity.h/c    # Keypair persistence
 │   └── screens/
+│       ├── ui_common.h/c       # Shared status bar + tab bar
 │       ├── scr_setup.h/c
-│       ├── scr_home.h/c
 │       ├── scr_contacts.h/c
 │       ├── scr_key_exchange.h/c
 │       ├── scr_assign_key.h/c
-│       ├── scr_compose.h/c
 │       ├── scr_inbox.h/c
 │       └── scr_conversation.h/c
 └── tests/
