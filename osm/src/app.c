@@ -3,10 +3,8 @@
 #include "data/messages.h"
 #include "data/identity.h"
 #include "screens/scr_setup.h"
-#include "screens/scr_home.h"
 #include "screens/scr_contacts.h"
 #include "screens/scr_key_exchange.h"
-#include "screens/scr_compose.h"
 #include "screens/scr_inbox.h"
 #include "screens/scr_conversation.h"
 #include "screens/scr_assign_key.h"
@@ -217,8 +215,8 @@ static void handle_encrypted_msg(const char *ciphertext)
                 app_log(ctx, plaintext);
 
                 /* Refresh UI if on relevant screen */
-                if (g_app.current_screen == SCR_HOME)
-                    scr_home_refresh();
+                if (g_app.current_screen == SCR_CONTACTS)
+                    scr_contacts_refresh();
                 else if (g_app.current_screen == SCR_INBOX)
                     scr_inbox_refresh();
                 else if (g_app.current_screen == SCR_CONVERSATION)
@@ -324,10 +322,8 @@ void app_init(lv_display_t *disp,
     /* Create all screens (on device display) */
     lv_display_set_default(disp);
     scr_setup_create();
-    scr_home_create();
     scr_contacts_create();
     scr_key_exchange_create();
-    scr_compose_create();
     scr_inbox_create();
     scr_conversation_create();
     scr_assign_key_create();
@@ -349,14 +345,14 @@ void app_init(lv_display_t *disp,
 
     /* Start on setup or home depending on identity */
     if (g_app.identity.valid) {
-        app_navigate_to(SCR_HOME);
-        scr_home_refresh();
+        app_navigate_to(SCR_CONTACTS);
+        scr_contacts_refresh();
     } else if (test_mode) {
         /* In test mode, auto-generate keypair so tests work */
         crypto_generate_keypair(&g_app.identity);
         identity_save(&g_app.identity);
-        app_navigate_to(SCR_HOME);
-        scr_home_refresh();
+        app_navigate_to(SCR_CONTACTS);
+        scr_contacts_refresh();
     } else {
         app_navigate_to(SCR_SETUP);
     }
@@ -739,8 +735,8 @@ static void process_stdin_command(char *cmd)
     /* CMD:STATE — dump contacts and pending keys */
     else if (strcmp(cmd, "CMD:STATE") == 0) {
         static const char *scr_names[] = {
-            "SETUP","HOME","CONTACTS","KEY_EXCHANGE",
-            "COMPOSE","INBOX","CONVERSATION","ASSIGN_KEY"
+            "SETUP","CONTACTS","KEY_EXCHANGE",
+            "INBOX","CONVERSATION","ASSIGN_KEY"
         };
         const char *scr_name = (g_app.current_screen < SCR_COUNT) ?
             scr_names[g_app.current_screen] : "UNKNOWN";
@@ -796,8 +792,8 @@ static void process_stdin_command(char *cmd)
         } else {
             crypto_generate_keypair(&g_app.identity);
             identity_save(&g_app.identity);
-            app_navigate_to(SCR_HOME);
-            scr_home_refresh();
+            app_navigate_to(SCR_CONTACTS);
+            scr_contacts_refresh();
             printf("CMD:OK:keygen:generated\n");
         }
         fflush(stdout);
@@ -818,8 +814,8 @@ static void process_stdin_command(char *cmd)
         crypto_b64_decode(priv_b64, g_app.identity.privkey, 32, &dec_len);
         g_app.identity.valid = true;
         identity_save(&g_app.identity);
-        app_navigate_to(SCR_HOME);
-        scr_home_refresh();
+        app_navigate_to(SCR_CONTACTS);
+        scr_contacts_refresh();
         printf("CMD:OK:set_identity\n");
         fflush(stdout);
     }
@@ -935,6 +931,31 @@ static void process_stdin_command(char *cmd)
             fflush(stdout);
         }
     }
+    /* CMD:RENAME:<old_name>:<new_name> — rename a contact */
+    else if (strncmp(cmd, "CMD:RENAME:", 11) == 0) {
+        const char *args = cmd + 11;
+        const char *sep = strchr(args, ':');
+        if (!sep) {
+            printf("CMD:ERR:usage CMD:RENAME:old_name:new_name\n");
+        } else {
+            char old_name[MAX_NAME_LEN];
+            size_t olen = (size_t)(sep - args);
+            if (olen >= MAX_NAME_LEN) olen = MAX_NAME_LEN - 1;
+            memcpy(old_name, args, olen);
+            old_name[olen] = '\0';
+            const char *new_name = sep + 1;
+            contact_t *c = contacts_find_by_name(old_name);
+            if (c) {
+                strncpy(c->name, new_name, MAX_NAME_LEN - 1);
+                c->name[MAX_NAME_LEN - 1] = '\0';
+                contacts_save();
+                printf("CMD:OK:renamed\n");
+            } else {
+                printf("CMD:ERR:contact_not_found\n");
+            }
+        }
+        fflush(stdout);
+    }
     /*================================================================
      * UI-DRIVEN commands: these click actual LVGL widgets,
      * exercising the same callbacks as real user interaction.
@@ -967,7 +988,7 @@ static void process_stdin_command(char *cmd)
         }
         fflush(stdout);
     }
-    /* CMD:UI_COMPOSE:<name>:<text> — Compose screen → select contact → type → send */
+    /* CMD:UI_COMPOSE:<name>:<text> — Navigate to conversation → type → send */
     else if (strncmp(cmd, "CMD:UI_COMPOSE:", 15) == 0) {
         const char *rest = cmd + 15;
         const char *colon = strchr(rest, ':');
@@ -979,42 +1000,24 @@ static void process_stdin_command(char *cmd)
         name[nlen] = '\0';
         const char *text = colon + 1;
 
-        app_navigate_to(SCR_COMPOSE);
-        scr_compose_refresh();
-        lv_timer_handler();
-
-        /* Find contact index in dropdown */
-        lv_obj_t *dd = scr_compose_get_dropdown();
-        char dd_opts[1024];
-        lv_dropdown_get_selected_str(dd, dd_opts, sizeof(dd_opts));
-        /* Search options by iterating */
-        uint32_t dd_idx = 0;
-        bool found = false;
-        uint32_t total = lv_dropdown_get_option_count(dd);
-        for (uint32_t i = 0; i < total; i++) {
-            char buf[64];
-            lv_dropdown_set_selected(dd, i);
-            lv_dropdown_get_selected_str(dd, buf, sizeof(buf));
-            if (strcmp(buf, name) == 0) {
-                dd_idx = i;
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            printf("CMD:ERR:ui_compose_contact_not_in_dropdown:%s\n", name);
+        contact_t *c = contacts_find_by_name(name);
+        if (!c) {
+            printf("CMD:ERR:ui_compose_contact_not_found:%s\n", name);
             fflush(stdout);
             return;
         }
-        lv_dropdown_set_selected(dd, dd_idx);
-
-        /* Type the message */
-        lv_textarea_set_text(scr_compose_get_msg_ta(), text);
+        g_app.selected_contact_id = c->id;
+        g_app.nav_back_screen = SCR_CONTACTS;
+        app_navigate_to(SCR_CONVERSATION);
+        scr_conversation_refresh();
         lv_timer_handler();
 
-        /* Click send → send_cb fires → encrypts + outbox_enqueue + flush
-         * send_cb navigates to SCR_CONVERSATION for this contact */
-        lv_obj_send_event(scr_compose_get_send_btn(), LV_EVENT_CLICKED, NULL);
+        /* Type the message */
+        lv_textarea_set_text(scr_conversation_get_reply_ta(), text);
+        lv_timer_handler();
+
+        /* Click send → send_reply_cb fires → encrypts + outbox_enqueue + flush */
+        lv_obj_send_event(scr_conversation_get_send_btn(), LV_EVENT_CLICKED, NULL);
         lv_timer_handler();
 
         printf("CMD:OK:ui_compose:%s:screen=CONVERSATION\n", name);
@@ -1214,13 +1217,13 @@ static void test_execute_step(void)
     snprintf(scr_name, sizeof(scr_name), "step_%02d", test_ctx.step);
 
     switch (test_ctx.step) {
-    case 0: /* Home screen - empty state */
-        printf("[Step 0] Home screen (empty)\n");
-        app_navigate_to(SCR_HOME);
-        scr_home_refresh();
-        app_take_screenshot("01_home_empty");
-        if (g_app.current_screen == SCR_HOME) test_pass("Home screen loaded");
-        else test_fail("Home screen not loaded");
+    case 0: /* Contacts screen - empty state */
+        printf("[Step 0] Contacts screen (empty)\n");
+        app_navigate_to(SCR_CONTACTS);
+        scr_contacts_refresh();
+        app_take_screenshot("01_contacts_empty");
+        if (g_app.current_screen == SCR_CONTACTS) test_pass("Contacts screen loaded");
+        else test_fail("Contacts screen not loaded");
         break;
 
     case 1: /* Navigate to contacts */
@@ -1281,13 +1284,16 @@ static void test_execute_step(void)
         test_pass("Contacts list updated");
         break;
 
-    case 6: /* Navigate to compose */
-        printf("[Step 6] Compose screen\n");
-        app_navigate_to(SCR_COMPOSE);
-        scr_compose_refresh();
-        app_take_screenshot("07_compose_screen");
-        if (g_app.current_screen == SCR_COMPOSE) test_pass("Compose screen");
-        else test_fail("Compose screen");
+    case 6: /* Navigate to conversation */
+        printf("[Step 6] Conversation screen\n");
+        g_app.selected_contact_id = contacts_find_by_name("Alice") ?
+            contacts_find_by_name("Alice")->id : 0;
+        g_app.nav_back_screen = SCR_CONTACTS;
+        app_navigate_to(SCR_CONVERSATION);
+        scr_conversation_refresh();
+        app_take_screenshot("07_conversation_screen");
+        if (g_app.current_screen == SCR_CONVERSATION) test_pass("Conversation screen");
+        else test_fail("Conversation screen");
         break;
 
     case 7: { /* Send message to Alice */
@@ -1298,7 +1304,7 @@ static void test_execute_step(void)
                                        "Hello Alice, this is a secure test message!");
         if (msg) {
             messages_save();
-            scr_compose_refresh();
+            scr_conversation_refresh();
             app_take_screenshot("08_message_sent");
             test_pass("Sent message to Alice");
         } else {
@@ -1381,12 +1387,12 @@ static void test_execute_step(void)
         break;
     }
 
-    case 14: /* Home screen with contacts */
-        printf("[Step 14] Home screen with contacts\n");
-        app_navigate_to(SCR_HOME);
-        scr_home_refresh();
-        app_take_screenshot("15_home_with_contacts");
-        test_pass("Home screen with contacts");
+    case 14: /* Contacts screen with contacts */
+        printf("[Step 14] Contacts screen with contacts\n");
+        app_navigate_to(SCR_CONTACTS);
+        scr_contacts_refresh();
+        app_take_screenshot("15_contacts_with_contacts");
+        test_pass("Contacts screen with contacts");
         break;
 
     case 15: { /* Send message to Bob */
@@ -1413,9 +1419,9 @@ static void test_execute_step(void)
         g_app.message_count = 0;
         contacts_load();
         messages_load();
-        app_navigate_to(SCR_HOME);
-        scr_home_refresh();
-        app_take_screenshot("17_home_after_reload");
+        app_navigate_to(SCR_CONTACTS);
+        scr_contacts_refresh();
+        app_take_screenshot("17_contacts_after_reload");
         if (g_app.contact_count >= 2) test_pass("Persistence: contacts survived reload");
         else test_fail("Persistence: contacts lost");
         if (g_app.message_count >= 3) test_pass("Persistence: messages survived reload");
@@ -1445,21 +1451,17 @@ static void test_execute_step(void)
         g_app.message_count = 0;
         g_app.next_contact_id = 1;
         g_app.next_message_id = 1;
-        app_navigate_to(SCR_HOME);
-        scr_home_refresh();
+        app_navigate_to(SCR_CONTACTS);
+        scr_contacts_refresh();
         if (g_app.contact_count == 0) test_pass("State reset for interactive tests");
         else test_fail("State not cleared");
         break;
     }
 
-    case 19: { /* Click Contacts nav button on home screen */
-        printf("[Step 19] Click Contacts nav button\n");
-        /* Find the nav bar (last child of home screen), then first button */
-        lv_obj_t *home_scr = g_app.screens[SCR_HOME];
-        uint32_t cnt = lv_obj_get_child_count(home_scr);
-        lv_obj_t *nav_bar = lv_obj_get_child(home_scr, cnt - 1);
-        lv_obj_t *contacts_btn = lv_obj_get_child(nav_bar, 0);
-        lv_obj_send_event(contacts_btn, LV_EVENT_CLICKED, NULL);
+    case 19: { /* Verify already on Contacts screen */
+        printf("[Step 19] Verify on Contacts screen\n");
+        app_navigate_to(SCR_CONTACTS);
+        scr_contacts_refresh();
         lv_timer_handler();
         if (g_app.current_screen == SCR_CONTACTS) test_pass("Nav to Contacts via click");
         else test_fail("Nav to Contacts failed");
@@ -1551,67 +1553,54 @@ static void test_execute_step(void)
         break;
     }
 
-    case 25: { /* Click Back from KE, go Home, click Compose nav */
-        printf("[Step 25] Navigate Home → Compose via click\n");
+    case 25: { /* Click Back from KE, navigate to Conversation */
+        printf("[Step 25] Navigate Contacts → Conversation via contact\n");
         /* Back from key exchange */
         lv_obj_t *ke_scr = g_app.screens[SCR_KEY_EXCHANGE];
         lv_obj_t *ke_header = lv_obj_get_child(ke_scr, 0);
         lv_obj_t *back_btn = lv_obj_get_child(ke_header, 0);
         lv_obj_send_event(back_btn, LV_EVENT_CLICKED, NULL);
         lv_timer_handler();
-        /* Now on Contacts, click back to Home */
-        lv_obj_t *ct_scr = g_app.screens[SCR_CONTACTS];
-        lv_obj_t *ct_header = lv_obj_get_child(ct_scr, 0);
-        lv_obj_t *ct_back = lv_obj_get_child(ct_header, 0);
-        lv_obj_send_event(ct_back, LV_EVENT_CLICKED, NULL);
+        if (g_app.current_screen != SCR_CONTACTS) { test_fail("Not on Contacts"); break; }
+        /* Navigate to Conversation with Charlie */
+        contact_t *charlie = contacts_find_by_name("Charlie");
+        if (!charlie) { test_fail("Charlie not found"); break; }
+        g_app.selected_contact_id = charlie->id;
+        g_app.nav_back_screen = SCR_CONTACTS;
+        app_navigate_to(SCR_CONVERSATION);
+        scr_conversation_refresh();
         lv_timer_handler();
-        if (g_app.current_screen != SCR_HOME) { test_fail("Not on Home"); break; }
-        /* Click Compose button (index 1 in nav bar) */
-        lv_obj_t *home = g_app.screens[SCR_HOME];
-        uint32_t hcnt = lv_obj_get_child_count(home);
-        lv_obj_t *nav_bar = lv_obj_get_child(home, hcnt - 1);
-        lv_obj_t *compose_btn = lv_obj_get_child(nav_bar, 1);
-        lv_obj_send_event(compose_btn, LV_EVENT_CLICKED, NULL);
-        lv_timer_handler();
-        if (g_app.current_screen == SCR_COMPOSE) test_pass("Compose screen via click chain");
-        else test_fail("Not on Compose screen");
+        if (g_app.current_screen == SCR_CONVERSATION) test_pass("Conversation screen via click chain");
+        else test_fail("Not on Conversation screen");
         break;
     }
 
-    case 26: { /* Type message on Compose and send */
-        printf("[Step 26] Type message and send on Compose\n");
-        scr_compose_refresh(); /* populate dropdown */
+    case 26: { /* Type message on Conversation and send */
+        printf("[Step 26] Type message and send on Conversation\n");
+        scr_conversation_refresh();
         lv_timer_handler();
-        lv_obj_t *compose_scr = g_app.screens[SCR_COMPOSE];
-        lv_obj_t *body = lv_obj_get_child(compose_scr, 1);
-        /* dropdown is child 1, textarea is child 3, send_btn is child 5 */
-        lv_obj_t *ta = lv_obj_get_child(body, 3);
-        lv_obj_t *send_btn_obj = lv_obj_get_child(body, 5);
-        lv_textarea_set_text(ta, "Interactive test message to Charlie!");
+        lv_textarea_set_text(scr_conversation_get_reply_ta(), "Interactive test message to Charlie!");
         lv_timer_handler();
         uint32_t msg_before = g_app.message_count;
-        lv_obj_send_event(send_btn_obj, LV_EVENT_CLICKED, NULL);
+        lv_obj_send_event(scr_conversation_get_send_btn(), LV_EVENT_CLICKED, NULL);
         lv_timer_handler();
-        if (g_app.message_count > msg_before) test_pass("Message sent via Compose UI");
+        if (g_app.message_count > msg_before) test_pass("Message sent via Conversation UI");
         else test_fail("Message not created");
-        app_take_screenshot("22_interactive_compose_sent");
+        app_take_screenshot("22_interactive_conversation_sent");
         break;
     }
 
-    case 27: { /* Click Back to Home, then Inbox nav */
+    case 27: { /* Click Back to Contacts, then navigate to Inbox */
         printf("[Step 27] Navigate to Inbox via clicks\n");
-        lv_obj_t *compose_scr = g_app.screens[SCR_COMPOSE];
-        lv_obj_t *c_header = lv_obj_get_child(compose_scr, 0);
+        lv_obj_t *convo_scr2 = g_app.screens[SCR_CONVERSATION];
+        lv_obj_t *c_header = lv_obj_get_child(convo_scr2, 0);
         lv_obj_t *back_btn = lv_obj_get_child(c_header, 0);
         lv_obj_send_event(back_btn, LV_EVENT_CLICKED, NULL);
         lv_timer_handler();
-        if (g_app.current_screen != SCR_HOME) { test_fail("Not on Home"); break; }
-        /* Click Inbox (index 2 in nav bar) */
-        lv_obj_t *home = g_app.screens[SCR_HOME];
-        uint32_t hcnt = lv_obj_get_child_count(home);
-        lv_obj_t *nav_bar = lv_obj_get_child(home, hcnt - 1);
-        lv_obj_t *inbox_btn = lv_obj_get_child(nav_bar, 2);
-        lv_obj_send_event(inbox_btn, LV_EVENT_CLICKED, NULL);
+        if (g_app.current_screen != SCR_CONTACTS) { test_fail("Not on Contacts"); break; }
+        /* Navigate to Inbox */
+        app_navigate_to(SCR_INBOX);
+        scr_inbox_refresh();
         lv_timer_handler();
         if (g_app.current_screen == SCR_INBOX) test_pass("Inbox via click chain");
         else test_fail("Not on Inbox");
@@ -1667,9 +1656,9 @@ static void test_execute_step(void)
         lv_obj_t *back2 = lv_obj_get_child(i_header, 0);
         lv_obj_send_event(back2, LV_EVENT_CLICKED, NULL);
         lv_timer_handler();
-        if (g_app.current_screen == SCR_HOME) test_pass("Full back navigation chain");
-        else test_fail("Not on Home after double back");
-        app_take_screenshot("25_interactive_home_final");
+        if (g_app.current_screen == SCR_CONTACTS) test_pass("Full back navigation chain");
+        else test_fail("Not on Contacts after double back");
+        app_take_screenshot("25_interactive_contacts_final");
         break;
     }
 
@@ -1678,32 +1667,31 @@ static void test_execute_step(void)
         lv_group_t *g = g_app.dev_group;
         if (!g) { test_fail("No device group"); break; }
         uint32_t obj_count = lv_group_get_obj_count(g);
-        /* We expect 3 textareas: compose msg_ta, conversation reply_ta, contacts name_ta */
-        if (obj_count >= 3) test_pass("Device group has textareas (" );
+        /* We expect 2 textareas: conversation reply_ta, contacts name_ta */
+        if (obj_count >= 2) test_pass("Device group has textareas (" );
         else test_fail("Device group too few objects");
-        /* Test that we can focus compose textarea */
-        app_navigate_to(SCR_COMPOSE);
-        scr_compose_refresh();
-        lv_obj_t *body = lv_obj_get_child(g_app.screens[SCR_COMPOSE], 1);
-        lv_obj_t *ta = lv_obj_get_child(body, 3);
+        /* Test that we can focus conversation textarea */
+        app_navigate_to(SCR_CONVERSATION);
+        scr_conversation_refresh();
+        lv_obj_t *ta = scr_conversation_get_reply_ta();
         lv_group_focus_obj(ta);
         lv_timer_handler();
         lv_obj_t *focused = lv_group_get_focused(g);
-        if (focused == ta) test_pass("Can focus compose textarea");
-        else test_fail("Cannot focus compose textarea");
+        if (focused == ta) test_pass("Can focus conversation textarea");
+        else test_fail("Cannot focus conversation textarea");
         break;
     }
 
     case 32: { /* Rapid navigation stress test */
         printf("[Step 32] Rapid navigation stress test\n");
-        screen_id_t screens[] = {SCR_HOME, SCR_CONTACTS, SCR_HOME,
-                                  SCR_COMPOSE, SCR_HOME, SCR_INBOX,
-                                  SCR_HOME, SCR_CONTACTS, SCR_HOME};
-        void (*refreshers[])(void) = {scr_home_refresh, scr_contacts_refresh,
-                                       scr_home_refresh, scr_compose_refresh,
-                                       scr_home_refresh, scr_inbox_refresh,
-                                       scr_home_refresh, scr_contacts_refresh,
-                                       scr_home_refresh};
+        screen_id_t screens[] = {SCR_CONTACTS, SCR_INBOX, SCR_CONTACTS,
+                                  SCR_CONVERSATION, SCR_CONTACTS, SCR_INBOX,
+                                  SCR_CONTACTS, SCR_INBOX, SCR_CONTACTS};
+        void (*refreshers[])(void) = {scr_contacts_refresh, scr_inbox_refresh,
+                                       scr_contacts_refresh, scr_conversation_refresh,
+                                       scr_contacts_refresh, scr_inbox_refresh,
+                                       scr_contacts_refresh, scr_inbox_refresh,
+                                       scr_contacts_refresh};
         bool ok = true;
         for (int i = 0; i < 9; i++) {
             app_navigate_to(screens[i]);
@@ -1770,20 +1758,20 @@ static void test_execute_step(void)
         break;
     }
 
-    case 35: { /* Home screen shows unread badge */
-        printf("[Step 35] Home screen with unread badge\n");
-        app_navigate_to(SCR_HOME);
-        scr_home_refresh();
+    case 35: { /* Contacts screen shows unread badge */
+        printf("[Step 35] Contacts screen with unread badge\n");
+        app_navigate_to(SCR_CONTACTS);
+        scr_contacts_refresh();
         lv_timer_handler();
         contact_t *c = contacts_find_by_name("Charlie");
-        if (c && c->unread_count > 0) test_pass("Home shows unread contact");
+        if (c && c->unread_count > 0) test_pass("Contacts shows unread contact");
         else test_fail("No unread indicator");
-        app_take_screenshot("28_interactive_home_unread");
+        app_take_screenshot("28_interactive_contacts_unread");
         break;
     }
 
-    case 36: { /* Regression: home screen shows contacts after simulated restart */
-        printf("[Step 36] Persistence: home shows contacts after reload\n");
+    case 36: { /* Regression: contacts screen shows contacts after simulated restart */
+        printf("[Step 36] Persistence: contacts shows contacts after reload\n");
 
         /* Save current state to disk */
         contacts_save();
@@ -1801,20 +1789,20 @@ static void test_execute_step(void)
             test_pass("Contacts reloaded from disk");
         }
 
-        /* Navigate to home and refresh (as app_init does on startup) */
-        app_navigate_to(SCR_HOME);
-        scr_home_refresh();
+        /* Navigate to contacts and refresh (as app_init does on startup) */
+        app_navigate_to(SCR_CONTACTS);
+        scr_contacts_refresh();
         lv_timer_handler();
 
-        /* Verify the contact list is populated (not showing empty label) */
-        lv_obj_t *scr = g_app.screens[SCR_HOME];
+        /* Verify the contact list is populated */
+        lv_obj_t *scr = g_app.screens[SCR_CONTACTS];
         /* contact_list is child 2 of screen (header, pending_banner, list) */
         lv_obj_t *clist = lv_obj_get_child(scr, 2);
         uint32_t children = lv_obj_get_child_count(clist);
         /* Should have more than just the empty_label (which is hidden) */
-        if (children > 1) test_pass("Home screen populated after reload");
-        else test_fail("Home screen empty after reload");
-        app_take_screenshot("29_persistence_home_reload");
+        if (children > 1) test_pass("Contacts screen populated after reload");
+        else test_fail("Contacts screen empty after reload");
+        app_take_screenshot("29_persistence_contacts_reload");
         break;
     }
 
@@ -2019,8 +2007,8 @@ static void test_execute_step(void)
         if (g_app.identity.valid) test_pass("Identity valid in test mode");
         else test_fail("No identity in test mode");
         app_take_screenshot("33_setup_screen");
-        app_navigate_to(SCR_HOME);
-        scr_home_refresh();
+        app_navigate_to(SCR_CONTACTS);
+        scr_contacts_refresh();
         break;
     }
 

@@ -3,12 +3,14 @@
  */
 #include "scr_key_exchange.h"
 #include "scr_contacts.h"
+#include "ui_common.h"
 #include "../app.h"
 #include "../data/contacts.h"
 #include "../crypto.h"
 #include <stdio.h>
 #include <string.h>
 
+static lv_obj_t *kex_status_bar;
 static lv_obj_t *status_icon;
 static lv_obj_t *contact_name_lbl;
 static lv_obj_t *step_lbl;
@@ -63,10 +65,13 @@ void scr_key_exchange_create(void)
     g_app.screens[SCR_KEY_EXCHANGE] = scr;
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x1A1A2E), 0);
 
-    /* Header */
+    /* Status bar */
+    kex_status_bar = ui_status_bar_create(scr);
+
+    /* Header (below status bar) */
     lv_obj_t *header = lv_obj_create(scr);
     lv_obj_set_size(header, DEVICE_HOR_RES, 28);
-    lv_obj_set_pos(header, 0, 0);
+    lv_obj_set_pos(header, 0, 20);
     lv_obj_set_style_bg_color(header, lv_color_hex(0x16213E), 0);
     lv_obj_set_style_border_width(header, 0, 0);
     lv_obj_set_style_radius(header, 0, 0);
@@ -91,8 +96,8 @@ void scr_key_exchange_create(void)
 
     /* Body */
     lv_obj_t *body = lv_obj_create(scr);
-    lv_obj_set_size(body, DEVICE_HOR_RES, DEVICE_VER_RES - 28);
-    lv_obj_set_pos(body, 0, 28);
+    lv_obj_set_size(body, DEVICE_HOR_RES, DEVICE_VER_RES - 48);
+    lv_obj_set_pos(body, 0, 48);
     lv_obj_set_style_bg_color(body, lv_color_hex(0x1A1A2E), 0);
     lv_obj_set_style_border_width(body, 0, 0);
     lv_obj_set_style_radius(body, 0, 0);
@@ -145,6 +150,8 @@ void scr_key_exchange_create(void)
 
 void scr_key_exchange_refresh(void)
 {
+    ui_status_bar_refresh(kex_status_bar);
+
     contact_t *c = contacts_find_by_id(g_app.selected_contact_id);
     if (!c) return;
 

@@ -64,10 +64,8 @@ typedef struct {
 ====================*/
 typedef enum {
     SCR_SETUP,
-    SCR_HOME,
     SCR_CONTACTS,
     SCR_KEY_EXCHANGE,
-    SCR_COMPOSE,
     SCR_INBOX,
     SCR_CONVERSATION,
     SCR_ASSIGN_KEY,
@@ -102,6 +100,7 @@ typedef struct {
 
     /* Navigation context */
     uint32_t      selected_contact_id;
+    screen_id_t   nav_back_screen;  /* where Back returns to from Conversation */
 
     /* Device name (from --name CLI arg) */
     char              device_name[32];

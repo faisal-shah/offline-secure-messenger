@@ -4687,6 +4687,136 @@ def test_power_cycle_with_outbox():
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
+def test_contact_rename():
+    """Test 49: Rename a contact via CMD:RENAME and verify state."""
+    print("\n[Test 49] Contact rename")
+
+    osm = OsmProcess(PORT_A, "OSM-Rename")
+    try:
+        assert osm.start(), "OSM failed to start"
+        ca = TcpClient(PORT_A, "CA-Rename")
+        assert ca.connect(), "CA failed to connect"
+        time.sleep(0.3)
+
+        osm.send_cmd("CMD:KEYGEN")
+        resp = osm.send_cmd("CMD:IDENTITY")
+        pubkey = resp.split("CMD:IDENTITY:")[-1].strip()
+
+        # Add established contact
+        resp = osm.send_cmd(f"CMD:ADD_CONTACT:OldName:2:{pubkey}")
+        assert "CMD:OK:add_contact" in resp
+
+        # Rename it
+        resp = osm.send_cmd("CMD:RENAME:OldName:NewName")
+        assert "CMD:OK:renamed" in resp, f"Rename failed: {resp}"
+        print("  PASS: Contact renamed successfully")
+
+        # Verify via CMD:STATE
+        state = osm.send_cmd("CMD:STATE")
+        assert "NewName" in state, f"New name not found: {state}"
+        assert "OldName" not in state, f"Old name still present: {state}"
+        print("  PASS: CMD:STATE shows new name, old name gone")
+
+        # Rename nonexistent
+        resp = osm.send_cmd("CMD:RENAME:Ghost:Whatever")
+        assert "CMD:ERR:contact_not_found" in resp
+        print("  PASS: Rename nonexistent returns error")
+
+        # Send message using new name
+        resp = osm.send_cmd("CMD:UI_COMPOSE:NewName:Hello renamed!")
+        assert "CMD:OK:ui_compose:NewName" in resp, f"Compose after rename failed: {resp}"
+        print("  PASS: Can compose to renamed contact")
+
+        ca.disconnect()
+
+    finally:
+        osm.stop()
+
+
+def test_empty_conversation():
+    """Test 50: Navigate to conversation with no messages — shows empty state."""
+    print("\n[Test 50] Empty conversation")
+
+    osm = OsmProcess(PORT_A, "OSM-EmptyConvo")
+    try:
+        assert osm.start(), "OSM failed to start"
+        ca = TcpClient(PORT_A, "CA-EmptyConvo")
+        assert ca.connect(), "CA failed to connect"
+        time.sleep(0.3)
+
+        osm.send_cmd("CMD:KEYGEN")
+        resp = osm.send_cmd("CMD:IDENTITY")
+        pubkey = resp.split("CMD:IDENTITY:")[-1].strip()
+
+        # Add established contact (no messages)
+        resp = osm.send_cmd(f"CMD:ADD_CONTACT:EmptyPeer:2:{pubkey}")
+        assert "CMD:OK:add_contact" in resp
+
+        # Navigate to conversation via CMD:UI_COMPOSE but first check state before
+        state = osm.send_cmd("CMD:STATE")
+        assert "EmptyPeer" in state
+        # Verify no messages for this contact
+        assert "CMD:MSG:" not in state, f"Expected no messages: {state}"
+        print("  PASS: No messages initially")
+
+        # Send a message to create conversation
+        resp = osm.send_cmd("CMD:UI_COMPOSE:EmptyPeer:First message!")
+        assert "CMD:OK:ui_compose:EmptyPeer:screen=CONVERSATION" in resp
+        print("  PASS: Composed first message to empty conversation")
+
+        # Verify message exists now
+        state = osm.send_cmd("CMD:STATE")
+        assert "CMD:MSG:" in state, f"Message should exist now: {state}"
+        print("  PASS: Message created in previously empty conversation")
+
+        # Reply works
+        resp = osm.send_cmd("CMD:UI_REPLY:Follow-up!")
+        assert "CMD:OK:ui_reply" in resp
+        print("  PASS: Reply works in conversation")
+
+        ca.disconnect()
+
+    finally:
+        osm.stop()
+
+
+def test_screen_navigation():
+    """Test 51: Verify screen navigation — default is contacts, tab nav works."""
+    print("\n[Test 51] Screen navigation")
+
+    osm = OsmProcess(PORT_A, "OSM-Nav")
+    try:
+        assert osm.start(), "OSM failed to start"
+        time.sleep(0.3)
+
+        osm.send_cmd("CMD:KEYGEN")
+
+        # After setup, default screen should be CONTACTS
+        state = osm.send_cmd("CMD:STATE")
+        assert "screen=CONTACTS" in state, f"Expected CONTACTS screen, got: {state}"
+        print("  PASS: Default screen is CONTACTS")
+
+        # Setup an established contact
+        resp = osm.send_cmd("CMD:IDENTITY")
+        pubkey = resp.split("CMD:IDENTITY:")[-1].strip()
+        osm.send_cmd(f"CMD:ADD_CONTACT:NavPeer:2:{pubkey}")
+
+        # Compose goes to CONVERSATION
+        resp = osm.send_cmd("CMD:UI_COMPOSE:NavPeer:Nav test msg")
+        assert "screen=CONVERSATION" in resp
+        state = osm.send_cmd("CMD:STATE")
+        assert "screen=CONVERSATION" in state
+        print("  PASS: CMD:UI_COMPOSE navigates to CONVERSATION")
+
+        # HOME/COMPOSE screens should NOT exist in screen names
+        assert "screen=HOME" not in state
+        assert "screen=COMPOSE" not in state
+        print("  PASS: No HOME or COMPOSE screens in state")
+
+    finally:
+        osm.stop()
+
+
 def main():
     if not os.path.isfile(BINARY):
         print(f"ERROR: OSM binary not found at {BINARY}")
@@ -4748,6 +4878,10 @@ def main():
         test_message_delete,
         test_long_names_and_messages,
         test_power_cycle_with_outbox,
+        # Phase 17: UI simplification tests
+        test_contact_rename,
+        test_empty_conversation,
+        test_screen_navigation,
     ]
 
     passed = 0

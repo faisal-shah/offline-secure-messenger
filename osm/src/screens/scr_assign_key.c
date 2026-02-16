@@ -7,15 +7,16 @@
  *   - Dismiss and handle later
  */
 #include "scr_assign_key.h"
-#include "scr_home.h"
 #include "scr_contacts.h"
 #include "scr_key_exchange.h"
+#include "ui_common.h"
 #include "../app.h"
 #include "../data/contacts.h"
 #include "../crypto.h"
 #include <stdio.h>
 #include <string.h>
 
+static lv_obj_t *ak_status_bar;
 static lv_obj_t *body;
 static lv_obj_t *info_lbl;
 static lv_obj_t *key_display;
@@ -31,8 +32,8 @@ static uint32_t current_pending_idx;
 static void back_cb(lv_event_t *e)
 {
     (void)e;
-    app_navigate_to(SCR_HOME);
-    scr_home_refresh();
+    app_navigate_to(SCR_CONTACTS);
+    scr_contacts_refresh();
 }
 
 static void assign_to_contact_cb(lv_event_t *e)
@@ -62,8 +63,8 @@ static void assign_to_contact_cb(lv_event_t *e)
         current_pending_idx = 0;
         scr_assign_key_refresh();
     } else {
-        app_navigate_to(SCR_HOME);
-        scr_home_refresh();
+        app_navigate_to(SCR_CONTACTS);
+        scr_contacts_refresh();
     }
 }
 
@@ -115,8 +116,8 @@ static void confirm_new_cb(lv_event_t *e)
 static void later_cb(lv_event_t *e)
 {
     (void)e;
-    app_navigate_to(SCR_HOME);
-    scr_home_refresh();
+    app_navigate_to(SCR_CONTACTS);
+    scr_contacts_refresh();
 }
 
 void scr_assign_key_create(void)
@@ -125,10 +126,13 @@ void scr_assign_key_create(void)
     g_app.screens[SCR_ASSIGN_KEY] = scr;
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x1A1A2E), 0);
 
-    /* Header */
+    /* Status bar */
+    ak_status_bar = ui_status_bar_create(scr);
+
+    /* Header (below status bar) */
     lv_obj_t *header = lv_obj_create(scr);
     lv_obj_set_size(header, DEVICE_HOR_RES, 28);
-    lv_obj_set_pos(header, 0, 0);
+    lv_obj_set_pos(header, 0, 20);
     lv_obj_set_style_bg_color(header, lv_color_hex(0x16213E), 0);
     lv_obj_set_style_border_width(header, 0, 0);
     lv_obj_set_style_radius(header, 0, 0);
@@ -159,8 +163,8 @@ void scr_assign_key_create(void)
 
     /* Body */
     body = lv_obj_create(scr);
-    lv_obj_set_size(body, DEVICE_HOR_RES, DEVICE_VER_RES - 28);
-    lv_obj_set_pos(body, 0, 28);
+    lv_obj_set_size(body, DEVICE_HOR_RES, DEVICE_VER_RES - 48);
+    lv_obj_set_pos(body, 0, 48);
     lv_obj_set_style_bg_color(body, lv_color_hex(0x1A1A2E), 0);
     lv_obj_set_style_border_width(body, 0, 0);
     lv_obj_set_style_radius(body, 0, 0);
@@ -244,6 +248,7 @@ void scr_assign_key_create(void)
 
 void scr_assign_key_refresh(void)
 {
+    ui_status_bar_refresh(ak_status_bar);
     lv_obj_clean(contact_list);
 
     if (g_app.pending_key_count == 0) {

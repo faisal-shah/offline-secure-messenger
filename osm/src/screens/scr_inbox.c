@@ -1,28 +1,25 @@
 /**
  * Inbox Screen — Conversation list sorted by recency
+ * Now includes status bar (top) and tab bar (bottom).
  */
 #include "scr_inbox.h"
-#include "scr_home.h"
 #include "scr_conversation.h"
+#include "ui_common.h"
 #include "../app.h"
 #include "../data/contacts.h"
 #include "../data/messages.h"
 #include <stdio.h>
 #include <string.h>
 
+static lv_obj_t *status_bar;
+static lv_obj_t *tab_bar;
 static lv_obj_t *list_cont;
-
-static void back_cb(lv_event_t *e)
-{
-    (void)e;
-    app_navigate_to(SCR_HOME);
-    scr_home_refresh();
-}
 
 static void convo_tap_cb(lv_event_t *e)
 {
     uint32_t contact_id = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
     g_app.selected_contact_id = contact_id;
+    g_app.nav_back_screen = SCR_INBOX;
     contact_t *c = contacts_find_by_id(contact_id);
     if (c) {
         c->unread_count = 0;
@@ -44,36 +41,13 @@ void scr_inbox_create(void)
     g_app.screens[SCR_INBOX] = scr;
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x1A1A2E), 0);
 
-    /* Header */
-    lv_obj_t *header = lv_obj_create(scr);
-    lv_obj_set_size(header, DEVICE_HOR_RES, 28);
-    lv_obj_set_pos(header, 0, 0);
-    lv_obj_set_style_bg_color(header, lv_color_hex(0x16213E), 0);
-    lv_obj_set_style_border_width(header, 0, 0);
-    lv_obj_set_style_radius(header, 0, 0);
-    lv_obj_set_style_pad_all(header, 4, 0);
-    lv_obj_set_scrollbar_mode(header, LV_SCROLLBAR_MODE_OFF);
+    /* Status bar at top */
+    status_bar = ui_status_bar_create(scr);
 
-    lv_obj_t *back_btn = lv_button_create(header);
-    lv_obj_set_size(back_btn, 40, 22);
-    lv_obj_align(back_btn, LV_ALIGN_LEFT_MID, 0, 0);
-    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x0F3460), 0);
-    lv_obj_add_event_cb(back_btn, back_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *blbl = lv_label_create(back_btn);
-    lv_label_set_text(blbl, LV_SYMBOL_LEFT);
-    lv_obj_set_style_text_color(blbl, lv_color_white(), 0);
-    lv_obj_center(blbl);
-
-    lv_obj_t *title = lv_label_create(header);
-    lv_label_set_text(title, LV_SYMBOL_ENVELOPE " Inbox");
-    lv_obj_set_style_text_color(title, lv_color_hex(0x00B0FF), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
-    lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
-
-    /* List */
+    /* List — between status bar and tab bar */
     list_cont = lv_obj_create(scr);
-    lv_obj_set_size(list_cont, DEVICE_HOR_RES, DEVICE_VER_RES - 28);
-    lv_obj_set_pos(list_cont, 0, 28);
+    lv_obj_set_size(list_cont, DEVICE_HOR_RES, DEVICE_VER_RES - 20 - 32);
+    lv_obj_set_pos(list_cont, 0, 20);
     lv_obj_set_style_bg_color(list_cont, lv_color_hex(0x1A1A2E), 0);
     lv_obj_set_style_border_width(list_cont, 0, 0);
     lv_obj_set_style_radius(list_cont, 0, 0);
@@ -81,10 +55,15 @@ void scr_inbox_create(void)
     lv_obj_set_layout(list_cont, LV_LAYOUT_FLEX);
     lv_obj_set_flex_flow(list_cont, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(list_cont, 3, 0);
+
+    /* Tab bar at bottom */
+    tab_bar = ui_tab_bar_create(scr, 1);  /* 1 = Inbox active */
 }
 
 void scr_inbox_refresh(void)
 {
+    ui_status_bar_refresh(status_bar);
+    ui_tab_bar_refresh(tab_bar);
     lv_obj_clean(list_cont);
 
     /* Build list of contacts that have messages, sorted by latest */

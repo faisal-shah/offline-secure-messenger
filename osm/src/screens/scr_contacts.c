@@ -1,9 +1,11 @@
 /**
  * Contacts Screen — Manage contacts + initiate key exchange
+ * Now includes status bar (top) and tab bar (bottom).
  */
 #include "scr_contacts.h"
 #include "scr_key_exchange.h"
-#include "scr_home.h"
+#include "scr_conversation.h"
+#include "ui_common.h"
 #include "../app.h"
 #include "../data/contacts.h"
 #include "../data/messages.h"
@@ -11,20 +13,20 @@
 #include <stdio.h>
 #include <string.h>
 
+static lv_obj_t *status_bar;
+static lv_obj_t *tab_bar;
 static lv_obj_t *list_cont;
 static lv_obj_t *name_input_cont;
 static lv_obj_t *name_ta;
-static lv_obj_t *add_btn_hdr;       /* "+" button in header */
-static lv_obj_t *ok_btn_dialog;     /* "Create" button in name dialog */
-static lv_obj_t *confirm_del_cont;     /* delete-contact confirmation dialog */
-static uint32_t  pending_delete_id;    /* contact id awaiting confirmation */
+static lv_obj_t *add_btn_hdr;
+static lv_obj_t *ok_btn_dialog;
+static lv_obj_t *confirm_del_cont;
+static uint32_t  pending_delete_id;
 
-static void back_cb(lv_event_t *e)
-{
-    (void)e;
-    app_navigate_to(SCR_HOME);
-    scr_home_refresh();
-}
+/* Rename dialog */
+static lv_obj_t *rename_input_cont;
+static lv_obj_t *rename_ta;
+static uint32_t  rename_contact_id;
 
 static void add_contact_confirm_cb(lv_event_t *e)
 {
@@ -33,23 +35,16 @@ static void add_contact_confirm_cb(lv_event_t *e)
     if (name && strlen(name) > 0) {
         contact_t *c = contacts_add(name);
         if (c) {
-            /* Store our pubkey as the key to send to the peer */
             crypto_pubkey_to_b64(g_app.identity.pubkey,
                                  c->public_key, MAX_KEY_LEN);
             c->status = CONTACT_PENDING_SENT;
             contacts_save();
-
-            /* Send our pubkey to CA for transmission to peer */
             app_send_key_exchange(c->public_key);
-
-            /* Log DH key output */
             {
                 char ctx[128];
                 snprintf(ctx, sizeof(ctx), "DH Key -> %s (initiated)", c->name);
                 app_log(ctx, c->public_key);
             }
-
-            /* Navigate to key exchange wizard */
             g_app.selected_contact_id = c->id;
             app_navigate_to(SCR_KEY_EXCHANGE);
             scr_key_exchange_refresh();
@@ -71,12 +66,12 @@ static void cancel_add_cb(lv_event_t *e)
     lv_obj_add_flag(name_input_cont, LV_OBJ_FLAG_HIDDEN);
 }
 
+/* Delete contact */
 static void delete_contact_ask_cb(lv_event_t *e)
 {
     uint32_t idx = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
     if (idx < g_app.contact_count) {
         pending_delete_id = g_app.contacts[idx].id;
-        /* Update confirmation label with contact name */
         lv_obj_t *lbl = lv_obj_get_child(confirm_del_cont, 0);
         char msg[128];
         snprintf(msg, sizeof(msg), "Delete \"%s\"?\nAll messages will be removed.",
@@ -103,13 +98,71 @@ static void delete_contact_no_cb(lv_event_t *e)
     lv_obj_add_flag(confirm_del_cont, LV_OBJ_FLAG_HIDDEN);
 }
 
+/* Rename contact */
+static void rename_ask_cb(lv_event_t *e)
+{
+    uint32_t idx = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
+    if (idx < g_app.contact_count) {
+        rename_contact_id = g_app.contacts[idx].id;
+        lv_textarea_set_text(rename_ta, g_app.contacts[idx].name);
+        lv_obj_clear_flag(rename_input_cont, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void rename_confirm_cb(lv_event_t *e)
+{
+    (void)e;
+    const char *new_name = lv_textarea_get_text(rename_ta);
+    if (new_name && strlen(new_name) > 0) {
+        contact_t *c = contacts_find_by_id(rename_contact_id);
+        if (c) {
+            strncpy(c->name, new_name, MAX_NAME_LEN - 1);
+            c->name[MAX_NAME_LEN - 1] = '\0';
+            contacts_save();
+        }
+    }
+    lv_obj_add_flag(rename_input_cont, LV_OBJ_FLAG_HIDDEN);
+    scr_contacts_refresh();
+}
+
+static void rename_cancel_cb(lv_event_t *e)
+{
+    (void)e;
+    lv_obj_add_flag(rename_input_cont, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* Tap contact row: established → conversation, pending → key exchange */
 static void contact_tap_cb(lv_event_t *e)
 {
     uint32_t idx = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
     if (idx < g_app.contact_count) {
-        g_app.selected_contact_id = g_app.contacts[idx].id;
-        app_navigate_to(SCR_KEY_EXCHANGE);
-        scr_key_exchange_refresh();
+        contact_t *c = &g_app.contacts[idx];
+        g_app.selected_contact_id = c->id;
+        if (c->status == CONTACT_ESTABLISHED) {
+            g_app.nav_back_screen = SCR_CONTACTS;
+            c->unread_count = 0;
+            contacts_save();
+            app_navigate_to(SCR_CONVERSATION);
+            scr_conversation_refresh();
+        } else {
+            app_navigate_to(SCR_KEY_EXCHANGE);
+            scr_key_exchange_refresh();
+        }
+    }
+}
+
+/* Message button on a contact row — go directly to conversation */
+static void message_btn_cb(lv_event_t *e)
+{
+    uint32_t idx = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
+    if (idx < g_app.contact_count) {
+        contact_t *c = &g_app.contacts[idx];
+        g_app.selected_contact_id = c->id;
+        g_app.nav_back_screen = SCR_CONTACTS;
+        c->unread_count = 0;
+        contacts_save();
+        app_navigate_to(SCR_CONVERSATION);
+        scr_conversation_refresh();
     }
 }
 
@@ -119,46 +172,27 @@ void scr_contacts_create(void)
     g_app.screens[SCR_CONTACTS] = scr;
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x1A1A2E), 0);
 
-    /* Header */
-    lv_obj_t *header = lv_obj_create(scr);
-    lv_obj_set_size(header, DEVICE_HOR_RES, 28);
-    lv_obj_set_pos(header, 0, 0);
-    lv_obj_set_style_bg_color(header, lv_color_hex(0x16213E), 0);
-    lv_obj_set_style_border_width(header, 0, 0);
-    lv_obj_set_style_radius(header, 0, 0);
-    lv_obj_set_style_pad_all(header, 4, 0);
-    lv_obj_set_scrollbar_mode(header, LV_SCROLLBAR_MODE_OFF);
+    /* Status bar at top */
+    status_bar = ui_status_bar_create(scr);
 
-    lv_obj_t *back_btn = lv_button_create(header);
-    lv_obj_set_size(back_btn, 40, 22);
-    lv_obj_align(back_btn, LV_ALIGN_LEFT_MID, 0, 0);
-    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x0F3460), 0);
-    lv_obj_add_event_cb(back_btn, back_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *back_lbl = lv_label_create(back_btn);
-    lv_label_set_text(back_lbl, LV_SYMBOL_LEFT);
-    lv_obj_set_style_text_color(back_lbl, lv_color_white(), 0);
-    lv_obj_center(back_lbl);
-
-    lv_obj_t *title = lv_label_create(header);
-    lv_label_set_text(title, "Contacts");
-    lv_obj_set_style_text_color(title, lv_color_hex(0x00B0FF), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
-    lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
-
-    add_btn_hdr = lv_button_create(header);
-    lv_obj_set_size(add_btn_hdr, 40, 22);
-    lv_obj_align(add_btn_hdr, LV_ALIGN_RIGHT_MID, 0, 0);
+    /* Add button (positioned right of status bar) */
+    add_btn_hdr = lv_button_create(status_bar);
+    lv_obj_set_size(add_btn_hdr, 20, 16);
+    lv_obj_align(add_btn_hdr, LV_ALIGN_RIGHT_MID, -90, 0);
     lv_obj_set_style_bg_color(add_btn_hdr, lv_color_hex(0x00C853), 0);
+    lv_obj_set_style_radius(add_btn_hdr, 4, 0);
+    lv_obj_set_style_pad_all(add_btn_hdr, 0, 0);
     lv_obj_add_event_cb(add_btn_hdr, add_contact_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *add_lbl = lv_label_create(add_btn_hdr);
     lv_label_set_text(add_lbl, LV_SYMBOL_PLUS);
     lv_obj_set_style_text_color(add_lbl, lv_color_white(), 0);
+    lv_obj_set_style_text_font(add_lbl, &lv_font_montserrat_10, 0);
     lv_obj_center(add_lbl);
 
-    /* Contact list area */
+    /* Contact list area — between status bar and tab bar */
     list_cont = lv_obj_create(scr);
-    lv_obj_set_size(list_cont, DEVICE_HOR_RES, DEVICE_VER_RES - 28);
-    lv_obj_set_pos(list_cont, 0, 28);
+    lv_obj_set_size(list_cont, DEVICE_HOR_RES, DEVICE_VER_RES - 20 - 32);
+    lv_obj_set_pos(list_cont, 0, 20);
     lv_obj_set_style_bg_color(list_cont, lv_color_hex(0x1A1A2E), 0);
     lv_obj_set_style_border_width(list_cont, 0, 0);
     lv_obj_set_style_radius(list_cont, 0, 0);
@@ -166,6 +200,9 @@ void scr_contacts_create(void)
     lv_obj_set_layout(list_cont, LV_LAYOUT_FLEX);
     lv_obj_set_flex_flow(list_cont, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(list_cont, 3, 0);
+
+    /* Tab bar at bottom */
+    tab_bar = ui_tab_bar_create(scr, 0);  /* 0 = Contacts active */
 
     /* Name input overlay (hidden by default) */
     name_input_cont = lv_obj_create(scr);
@@ -210,6 +247,48 @@ void scr_contacts_create(void)
     lv_obj_set_style_text_color(cancel_lbl, lv_color_white(), 0);
     lv_obj_center(cancel_lbl);
 
+    /* Rename dialog (hidden by default) */
+    rename_input_cont = lv_obj_create(scr);
+    lv_obj_set_size(rename_input_cont, 280, 100);
+    lv_obj_center(rename_input_cont);
+    lv_obj_set_style_bg_color(rename_input_cont, lv_color_hex(0x0F3460), 0);
+    lv_obj_set_style_border_color(rename_input_cont, lv_color_hex(0x00B0FF), 0);
+    lv_obj_set_style_border_width(rename_input_cont, 2, 0);
+    lv_obj_set_style_radius(rename_input_cont, 8, 0);
+    lv_obj_set_style_pad_all(rename_input_cont, 8, 0);
+    lv_obj_add_flag(rename_input_cont, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *ren_prompt = lv_label_create(rename_input_cont);
+    lv_label_set_text(ren_prompt, "Rename Contact:");
+    lv_obj_set_style_text_color(ren_prompt, lv_color_white(), 0);
+    lv_obj_align(ren_prompt, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    rename_ta = lv_textarea_create(rename_input_cont);
+    lv_obj_set_size(rename_ta, 260, 30);
+    lv_obj_align(rename_ta, LV_ALIGN_TOP_LEFT, 0, 20);
+    lv_textarea_set_one_line(rename_ta, true);
+    if (g_app.dev_group) lv_group_add_obj(g_app.dev_group, rename_ta);
+
+    lv_obj_t *ren_ok = lv_button_create(rename_input_cont);
+    lv_obj_set_size(ren_ok, 80, 26);
+    lv_obj_align(ren_ok, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_set_style_bg_color(ren_ok, lv_color_hex(0x00C853), 0);
+    lv_obj_add_event_cb(ren_ok, rename_confirm_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *ren_ok_lbl = lv_label_create(ren_ok);
+    lv_label_set_text(ren_ok_lbl, "Save");
+    lv_obj_set_style_text_color(ren_ok_lbl, lv_color_white(), 0);
+    lv_obj_center(ren_ok_lbl);
+
+    lv_obj_t *ren_cancel = lv_button_create(rename_input_cont);
+    lv_obj_set_size(ren_cancel, 80, 26);
+    lv_obj_align(ren_cancel, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_set_style_bg_color(ren_cancel, lv_color_hex(0x424242), 0);
+    lv_obj_add_event_cb(ren_cancel, rename_cancel_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *ren_cancel_lbl = lv_label_create(ren_cancel);
+    lv_label_set_text(ren_cancel_lbl, "Cancel");
+    lv_obj_set_style_text_color(ren_cancel_lbl, lv_color_white(), 0);
+    lv_obj_center(ren_cancel_lbl);
+
     /* Delete confirmation dialog (hidden by default) */
     confirm_del_cont = lv_obj_create(scr);
     lv_obj_set_size(confirm_del_cont, 280, 110);
@@ -251,6 +330,8 @@ void scr_contacts_create(void)
 
 void scr_contacts_refresh(void)
 {
+    ui_status_bar_refresh(status_bar);
+    ui_tab_bar_refresh(tab_bar);
     lv_obj_clean(list_cont);
 
     if (g_app.contact_count == 0) {
@@ -298,31 +379,22 @@ void scr_contacts_refresh(void)
         lv_obj_t *ico = lv_label_create(row);
         lv_label_set_text(ico, status_text);
         lv_obj_set_style_text_color(ico, status_color, 0);
+        lv_obj_set_style_text_font(ico, &lv_font_montserrat_10, 0);
         lv_obj_align(ico, LV_ALIGN_LEFT_MID, 0, 0);
 
         lv_obj_t *name = lv_label_create(row);
         lv_label_set_text(name, c->name);
         lv_obj_set_style_text_color(name, lv_color_white(), 0);
-        lv_obj_align(name, LV_ALIGN_LEFT_MID, 22, 0);
+        lv_obj_set_style_text_font(name, &lv_font_montserrat_12, 0);
+        lv_obj_align(name, LV_ALIGN_LEFT_MID, 16, 0);
 
-        /* Status text */
-        const char *st_label;
-        switch (c->status) {
-        case CONTACT_ESTABLISHED:  st_label = "Secure"; break;
-        case CONTACT_PENDING_SENT: st_label = "Awaiting reply"; break;
-        case CONTACT_PENDING_RECEIVED: st_label = "Action needed"; break;
-        default: st_label = "";
-        }
-        lv_obj_t *st = lv_label_create(row);
-        lv_label_set_text(st, st_label);
-        lv_obj_set_style_text_color(st, lv_color_hex(0x888888), 0);
-        lv_obj_set_style_text_font(st, &lv_font_montserrat_10, 0);
-        lv_obj_align(st, LV_ALIGN_RIGHT_MID, -30, 0);
+        /* Action buttons — right side of row */
+        int btn_x = -2;
 
-        /* Delete button */
+        /* Delete button (always) */
         lv_obj_t *del_btn = lv_button_create(row);
-        lv_obj_set_size(del_btn, 24, 22);
-        lv_obj_align(del_btn, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_set_size(del_btn, 22, 20);
+        lv_obj_align(del_btn, LV_ALIGN_RIGHT_MID, btn_x, 0);
         lv_obj_set_style_bg_color(del_btn, lv_color_hex(0xFF1744), 0);
         lv_obj_set_style_radius(del_btn, 4, 0);
         lv_obj_set_style_pad_all(del_btn, 0, 0);
@@ -333,6 +405,40 @@ void scr_contacts_refresh(void)
         lv_obj_set_style_text_color(del_ico, lv_color_white(), 0);
         lv_obj_set_style_text_font(del_ico, &lv_font_montserrat_10, 0);
         lv_obj_center(del_ico);
+        btn_x -= 26;
+
+        /* Edit/rename button (always) */
+        lv_obj_t *edit_btn = lv_button_create(row);
+        lv_obj_set_size(edit_btn, 22, 20);
+        lv_obj_align(edit_btn, LV_ALIGN_RIGHT_MID, btn_x, 0);
+        lv_obj_set_style_bg_color(edit_btn, lv_color_hex(0x0F3460), 0);
+        lv_obj_set_style_radius(edit_btn, 4, 0);
+        lv_obj_set_style_pad_all(edit_btn, 0, 0);
+        lv_obj_add_event_cb(edit_btn, rename_ask_cb, LV_EVENT_CLICKED,
+                            (void *)(uintptr_t)i);
+        lv_obj_t *edit_ico = lv_label_create(edit_btn);
+        lv_label_set_text(edit_ico, LV_SYMBOL_EDIT);
+        lv_obj_set_style_text_color(edit_ico, lv_color_white(), 0);
+        lv_obj_set_style_text_font(edit_ico, &lv_font_montserrat_10, 0);
+        lv_obj_center(edit_ico);
+        btn_x -= 26;
+
+        /* Message button (only for established contacts) */
+        if (c->status == CONTACT_ESTABLISHED) {
+            lv_obj_t *msg_btn = lv_button_create(row);
+            lv_obj_set_size(msg_btn, 22, 20);
+            lv_obj_align(msg_btn, LV_ALIGN_RIGHT_MID, btn_x, 0);
+            lv_obj_set_style_bg_color(msg_btn, lv_color_hex(0x00C853), 0);
+            lv_obj_set_style_radius(msg_btn, 4, 0);
+            lv_obj_set_style_pad_all(msg_btn, 0, 0);
+            lv_obj_add_event_cb(msg_btn, message_btn_cb, LV_EVENT_CLICKED,
+                                (void *)(uintptr_t)i);
+            lv_obj_t *msg_ico = lv_label_create(msg_btn);
+            lv_label_set_text(msg_ico, LV_SYMBOL_ENVELOPE);
+            lv_obj_set_style_text_color(msg_ico, lv_color_white(), 0);
+            lv_obj_set_style_text_font(msg_ico, &lv_font_montserrat_10, 0);
+            lv_obj_center(msg_ico);
+        }
     }
 }
 

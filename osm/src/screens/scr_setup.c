@@ -5,7 +5,7 @@
 #include "scr_setup.h"
 #include "../app.h"
 #include "../data/identity.h"
-#include "scr_home.h"
+#include "scr_contacts.h"
 #include <stdio.h>
 
 static lv_obj_t *info_lbl;
@@ -37,8 +37,8 @@ static void generate_cb(lv_event_t *e)
 static void continue_cb(lv_event_t *e)
 {
     (void)e;
-    app_navigate_to(SCR_HOME);
-    scr_home_refresh();
+    app_navigate_to(SCR_CONTACTS);
+    scr_contacts_refresh();
 }
 
 void scr_setup_create(void)

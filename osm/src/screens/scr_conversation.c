@@ -1,8 +1,11 @@
 /**
  * Conversation Screen — Threaded chat view for a single contact
+ * Full-screen (no tabs), back returns to nav_back_screen.
  */
 #include "scr_conversation.h"
 #include "scr_inbox.h"
+#include "scr_contacts.h"
+#include "ui_common.h"
 #include "../app.h"
 #include "../data/contacts.h"
 #include "../data/messages.h"
@@ -10,19 +13,23 @@
 #include <stdio.h>
 #include <string.h>
 
+static lv_obj_t *status_bar;
 static lv_obj_t *header_name;
 static lv_obj_t *msg_list;
 static lv_obj_t *reply_ta;
 static lv_obj_t *send_btn;
-static lv_obj_t *confirm_del_thread; /* confirmation dialog for thread delete */
-static lv_obj_t *confirm_del_msg;    /* confirmation dialog for single message */
+static lv_obj_t *confirm_del_thread;
+static lv_obj_t *confirm_del_msg;
 static uint32_t  pending_del_msg_id;
 
 static void back_cb(lv_event_t *e)
 {
     (void)e;
-    app_navigate_to(SCR_INBOX);
-    scr_inbox_refresh();
+    screen_id_t back = g_app.nav_back_screen;
+    if (back != SCR_CONTACTS && back != SCR_INBOX) back = SCR_CONTACTS;
+    app_navigate_to(back);
+    if (back == SCR_INBOX) scr_inbox_refresh();
+    else scr_contacts_refresh();
 }
 
 static void send_reply_cb(lv_event_t *e)
@@ -98,18 +105,21 @@ void scr_conversation_create(void)
     g_app.screens[SCR_CONVERSATION] = scr;
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x1A1A2E), 0);
 
-    /* Header */
+    /* Status bar at top */
+    status_bar = ui_status_bar_create(scr);
+
+    /* Header (below status bar) — back button + contact name + delete */
     lv_obj_t *header = lv_obj_create(scr);
-    lv_obj_set_size(header, DEVICE_HOR_RES, 28);
-    lv_obj_set_pos(header, 0, 0);
+    lv_obj_set_size(header, DEVICE_HOR_RES, 24);
+    lv_obj_set_pos(header, 0, 20);
     lv_obj_set_style_bg_color(header, lv_color_hex(0x16213E), 0);
     lv_obj_set_style_border_width(header, 0, 0);
     lv_obj_set_style_radius(header, 0, 0);
-    lv_obj_set_style_pad_all(header, 4, 0);
+    lv_obj_set_style_pad_all(header, 2, 0);
     lv_obj_set_scrollbar_mode(header, LV_SCROLLBAR_MODE_OFF);
 
     lv_obj_t *back_btn = lv_button_create(header);
-    lv_obj_set_size(back_btn, 40, 22);
+    lv_obj_set_size(back_btn, 36, 20);
     lv_obj_align(back_btn, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x0F3460), 0);
     lv_obj_add_event_cb(back_btn, back_cb, LV_EVENT_CLICKED, NULL);
@@ -120,12 +130,12 @@ void scr_conversation_create(void)
 
     header_name = lv_label_create(header);
     lv_obj_set_style_text_color(header_name, lv_color_hex(0x00B0FF), 0);
-    lv_obj_set_style_text_font(header_name, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(header_name, &lv_font_montserrat_12, 0);
     lv_obj_align(header_name, LV_ALIGN_CENTER, 0, 0);
 
     /* Delete-thread button in header */
     lv_obj_t *del_thread_btn = lv_button_create(header);
-    lv_obj_set_size(del_thread_btn, 28, 22);
+    lv_obj_set_size(del_thread_btn, 24, 20);
     lv_obj_align(del_thread_btn, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_set_style_bg_color(del_thread_btn, lv_color_hex(0xFF1744), 0);
     lv_obj_set_style_radius(del_thread_btn, 4, 0);
@@ -137,10 +147,10 @@ void scr_conversation_create(void)
     lv_obj_set_style_text_font(dt_ico, &lv_font_montserrat_10, 0);
     lv_obj_center(dt_ico);
 
-    /* Message list */
+    /* Message list — between header and reply bar */
     msg_list = lv_obj_create(scr);
-    lv_obj_set_size(msg_list, DEVICE_HOR_RES, DEVICE_VER_RES - 28 - 36);
-    lv_obj_set_pos(msg_list, 0, 28);
+    lv_obj_set_size(msg_list, DEVICE_HOR_RES, DEVICE_VER_RES - 20 - 24 - 36);
+    lv_obj_set_pos(msg_list, 0, 44);
     lv_obj_set_style_bg_color(msg_list, lv_color_hex(0x1A1A2E), 0);
     lv_obj_set_style_border_width(msg_list, 0, 0);
     lv_obj_set_style_radius(msg_list, 0, 0);
@@ -251,6 +261,8 @@ void scr_conversation_create(void)
 
 void scr_conversation_refresh(void)
 {
+    ui_status_bar_refresh(status_bar);
+
     contact_t *c = contacts_find_by_id(g_app.selected_contact_id);
     if (c) {
         lv_label_set_text_fmt(header_name, LV_SYMBOL_EYE_CLOSE " %s", c->name);
@@ -260,6 +272,24 @@ void scr_conversation_refresh(void)
     }
 
     lv_obj_clean(msg_list);
+
+    /* Check if conversation is empty */
+    bool has_messages = false;
+    for (uint32_t i = 0; i < g_app.message_count; i++) {
+        if (g_app.messages[i].contact_id == g_app.selected_contact_id) {
+            has_messages = true;
+            break;
+        }
+    }
+
+    if (!has_messages) {
+        lv_obj_t *empty = lv_label_create(msg_list);
+        lv_label_set_text(empty, "No messages yet.\nType below to start the conversation.");
+        lv_obj_set_style_text_color(empty, lv_color_hex(0x888888), 0);
+        lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_width(empty, DEVICE_HOR_RES - 20);
+        return;
+    }
 
     for (uint32_t i = 0; i < g_app.message_count; i++) {
         message_t *m = &g_app.messages[i];
