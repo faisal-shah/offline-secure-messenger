@@ -1,5 +1,9 @@
 # /// script
-# dependencies = []
+# requires-python = ">=3.10"
+# dependencies = [
+#     "pynacl",
+#     "pytest",
+# ]
 # ///
 """
 E2E Integration Test for Offline Secure Messenger.

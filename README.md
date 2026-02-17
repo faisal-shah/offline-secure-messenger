@@ -184,12 +184,23 @@ so the same application code runs on both desktop and MCU:
 | GCC or Clang | C11 | OSM build |
 | CMake | ≥ 3.16 | OSM build system |
 | SDL2 | ≥ 2.0 | `libsdl2-dev` on Debian/Ubuntu |
-| JDK | ≥ 11 | Companion App (JDK 17+ for packaging) |
+| JDK | ≥ 17 | Companion App (desktop & Android) |
 | pkg-config | any | Used by CMake to find SDL2 |
 | Git | any | For submodules |
+| Python | ≥ 3.10 | E2E / BLE integration tests |
+| libdbus-1 | any | `libdbus-1-dev` — only for BLE transport build |
 
 ```bash
-sudo apt-get install build-essential cmake libsdl2-dev pkg-config git openjdk-17-jdk
+# Core (TCP simulator + Companion App + tests)
+sudo apt-get install build-essential cmake libsdl2-dev pkg-config git \
+    openjdk-17-jdk python3 python3-pip
+
+# BLE transport build (optional — requires BlueZ adapter)
+sudo apt-get install libdbus-1-dev
+
+# Python test dependencies
+pip install pytest pynacl                       # E2E tests
+pip install bleak pytest-asyncio                # BLE integration tests (optional)
 ```
 
 ## License
